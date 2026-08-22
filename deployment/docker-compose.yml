@@ -117,6 +117,7 @@ services:
     environment:
       PGADMIN_DEFAULT_EMAIL: admin@tradesignal.com
       PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_CONFIG_SCRIPT_NAME: "'/pgadmin'"
     ports:
       - '5050:80'
     depends_on:

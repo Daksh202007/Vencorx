@@ -3,7 +3,9 @@
   "version": "0.0.0",
   "license": "MIT",
   "scripts": {
-    "dev": "nx dev auth-service",
+    "auth": "nx dev auth-service",
+    "chat": "nx serve chat-service",
+    "admin": "nx dev admin-feature",
     "build": "nx build auth-service",
     "test": "nx test auth-service",
     "lint": "nx lint auth-service",
