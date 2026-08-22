@@ -6,9 +6,11 @@ import { KafkaModule } from './kafka/kafka.module';
 import { DatabaseModule } from './database/database.module';
 import { GatewayModule } from './gateway/gateway.module';
 import { AngelOneModule } from './angel-one/angel-one.module';
+import { ScheduleModule } from '@nestjs/schedule';
 
 @Module({
   imports: [
+    ScheduleModule.forRoot(),
     RedisModule,
     KafkaModule,
     DatabaseModule,

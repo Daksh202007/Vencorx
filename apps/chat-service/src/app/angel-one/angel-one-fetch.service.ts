@@ -1,43 +1,30 @@
 import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from '@nestjs/common';
+import { Cron } from '@nestjs/schedule';
 import { RedisService } from '../redis/redis.service';
 import { KafkaService } from '../kafka/kafka.service';
 import { TimescaleService, StockTick, BestFiveDepth } from '../database/timescale.service';
+import * as speakeasy from 'speakeasy';
 
-export class AngelOneWebSocket {
-  public id: number;
-  public subscribedStocks: Set<string> = new Set();
-  
-  constructor(id: number) {
-    this.id = id;
-  }
-  
-  public get count(): number {
-    return this.subscribedStocks.size;
-  }
-  
-  public isFull(): boolean {
-    return this.subscribedStocks.size >= 1000;
-  }
-  
-  public subscribe(stock: string): boolean {
-    if (this.isFull()) return false;
-    this.subscribedStocks.add(stock);
-    return true;
-  }
-  
-  public unsubscribe(stock: string): boolean {
-    return this.subscribedStocks.delete(stock);
-  }
-}
+// Note: smartapi-javascript does not have official types, using require
+const { SmartAPI, WebSocketV2 } = require('smartapi-javascript');
 
 @Injectable()
 export class AngelOneFetchService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(AngelOneFetchService.name);
-  private intervalId!: NodeJS.Timeout;
-  private currentStockPrices: Map<string, number> = new Map();
   
-  // Connection pool (maximum 3 WebSockets)
-  private connections: AngelOneWebSocket[] = [];
+  private smartApi: any;
+  private webSocket: any;
+  private isConnected = false;
+  
+  // Mapping for Symbol to Exchange Token (e.g. "RELIANCE" -> "32250")
+  private symbolToTokenMap = new Map<string, string>();
+  private tokenToSymbolMap = new Map<string, string>();
+  
+  // Scrip master URL
+  private readonly SCRIP_MASTER_URL = 'https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json';
+
+  // Active subscriptions (symbols)
+  private subscribedStocks = new Set<string>();
 
   constructor(
     private readonly redisService: RedisService,
@@ -46,271 +33,316 @@ export class AngelOneFetchService implements OnModuleInit, OnModuleDestroy {
   ) {}
 
   async onModuleInit() {
-    this.logger.log('Initializing Angel One Fetcher service (Connection Pool & Rate Limiter)');
+    this.logger.log('Initializing Real Angel One Fetcher service');
     
-    // Seed initial price points
-    this.currentStockPrices.set('RELIANCE', 2400);
-    this.currentStockPrices.set('TCS', 3400);
-    this.currentStockPrices.set('INFY', 1500);
-    this.currentStockPrices.set('HDFCBANK', 1600);
-
-    // Sync active stocks from Redis into our WebSocket connection pool
     try {
+      await this.downloadScripMaster();
+      await this.authenticateAndConnect();
+      
+      // Sync active stocks from Redis
       const activeStocks = await this.redisService.getGlobalActiveStocks();
       this.logger.log(`Restoring subscriptions for ${activeStocks.length} stocks from Redis...`);
       for (const stock of activeStocks) {
         this.subscribeStock(stock);
       }
     } catch (e: any) {
-      this.logger.warn(`Failed to sync active stocks from Redis on startup: ${e.message}`);
+      this.logger.error(`Failed to initialize Angel One service: ${e.message}`);
     }
-
-    // Update active stock pricing every 2 seconds
-    this.intervalId = setInterval(async () => {
-      await this.fetchAndPublishTicks();
-    }, 2000);
   }
 
   onModuleDestroy() {
-    if (this.intervalId) {
-      clearInterval(this.intervalId);
+    if (this.webSocket) {
+      this.webSocket.close();
     }
   }
 
-  /**
-   * Add a stock to the active WebSocket connection pool.
-   * Leverages existing connections, or creates a new connection (max 3), ensuring a 1000 stock limit per connection.
-   */
-  public subscribeStock(stock: string): boolean {
-    // Check if already subscribed
-    for (const conn of this.connections) {
-      if (conn.subscribedStocks.has(stock)) {
-        return true;
-      }
+  @Cron('30 8 * * *')
+  async handleDailyRestart() {
+    this.logger.log('Executing daily 8:30 AM CRON job: Re-authenticating with Angel One...');
+    if (this.webSocket) {
+      this.webSocket.close();
+      this.isConnected = false;
     }
-
-    // Try finding an active connection with capacity (< 1000 stocks)
-    for (const conn of this.connections) {
-      if (!conn.isFull()) {
-        conn.subscribe(stock);
-        this.logger.log(`Subscribed stock "${stock}" to connection ${conn.id}. (Subscribed count: ${conn.count}/1000)`);
-        return true;
-      }
-    }
-
-    // If all existing connections are full, check if we can spin up a new connection
-    if (this.connections.length < 3) {
-      const newId = this.connections.length + 1;
-      const newConn = new AngelOneWebSocket(newId);
-      newConn.subscribe(stock);
-      this.connections.push(newConn);
-      this.logger.log(`Created new Angel One WebSocket connection ${newId} for stock "${stock}".`);
-      return true;
-    }
-
-    this.logger.error(`Could not subscribe stock "${stock}". Absolute limit of 3000 stocks (across 3 connections) reached.`);
-    return false;
-  }
-
-  /**
-   * Remove a stock from the WebSocket connection pool
-   */
-  public unsubscribeStock(stock: string) {
-    for (const conn of this.connections) {
-      if (conn.unsubscribe(stock)) {
-        this.logger.log(`Unsubscribed stock "${stock}" from connection ${conn.id}. (Remaining: ${conn.count}/1000)`);
-        
-        // Remove empty extra connections (keep connection 1 alive)
-        if (conn.count === 0 && this.connections.length > 1) {
-          this.connections = this.connections.filter(c => c.id !== conn.id);
-          this.logger.log(`Closed empty Angel One WebSocket connection ${conn.id}.`);
-        }
-        break;
-      }
-    }
-  }
-
-  /**
-   * Fetch 2000 days of history at daily interval (4 requests * 500 rows each).
-   * Implements strict rate limiting: Max 3 requests per 1 second.
-   */
-  async fetchHistoryAndAddStock(symbol: string, exchange: string): Promise<any> {
-    const totalDays = 2000;
-    const limit = 500;
-    const numRequests = Math.ceil(totalDays / limit); // 4 requests
-
-    this.logger.log(`Initiating historical data fetch for stock ${symbol} (${exchange}). Requiring ${numRequests} pages of 500 candles.`);
-
-    const promises: Promise<StockTick[]>[] = [];
-
-    for (let i = 0; i < numRequests; i++) {
-      const startOffset = i * limit;
-      // Enforce rate limit: max 3 requests per second.
-      // Every 3 requests, add 1.1 seconds of delay buffer.
-      const delay = Math.floor(i / 3) * 1100;
-
-      const pagePromise = (async (): Promise<StockTick[]> => {
-        if (delay > 0) {
-          await new Promise(r => setTimeout(r, delay));
-        }
-
-        this.logger.log(`[REST HISTORICAL API] Page ${i + 1}/${numRequests} for ${symbol} (Sent with delay: ${delay}ms)`);
-        return this.generateMockCandles(symbol, startOffset, limit);
-      })();
-
-      promises.push(pagePromise);
-    }
-
-    const results = await Promise.all(promises);
-    const allCandles = results.flat();
-
-    this.logger.log(`Historical fetch complete for ${symbol}. Writing ${allCandles.length} candles to database.`);
-
-    // Write to database
-    for (const candle of allCandles) {
-      await this.timescaleService.saveStockTick(candle);
-    }
-
-    // Subscribe to live feed
-    const subscribed = this.subscribeStock(symbol);
-
-    if (subscribed) {
-      // Record stock as active in Redis
-      await this.redisService.addSocketToStock('admin', symbol);
-      return {
-        success: true,
-        message: `Successfully loaded 2000 days of daily history (${allCandles.length} rows) and subscribed stock "${symbol}" to WebSocket pool.`,
-      };
-    } else {
-      return {
-        success: false,
-        message: `Fetched 2000 days of history but could not subscribe stock "${symbol}" because the 3000 stock limit is reached.`,
-      };
-    }
-  }
-
-  /**
-   * Helper to generate mock daily historical candles
-   */
-  private generateMockCandles(stock: string, startDayOffset: number, count: number): StockTick[] {
-    const candles: StockTick[] = [];
-    const now = new Date();
-    const basePrice = stock === 'RELIANCE' ? 2400 : stock === 'TCS' ? 3400 : stock === 'INFY' ? 1500 : 1600;
-
-    for (let i = 0; i < count; i++) {
-      const dayOffset = startDayOffset + i;
-      const candleTime = new Date(now.getTime() - dayOffset * 24 * 60 * 60 * 1000);
-      
-      const change = (Math.random() - 0.5) * 20;
-      const close = parseFloat((basePrice + change).toFixed(2));
-      const open = parseFloat((basePrice - Math.random() * 5).toFixed(2));
-      const high = parseFloat((Math.max(open, close) + Math.random() * 10).toFixed(2));
-      const low = parseFloat((Math.min(open, close) - Math.random() * 10).toFixed(2));
-
-      candles.push({
-        stock,
-        lastTradedPrice: close,
-        open,
-        high,
-        low,
-        close,
-        lastTradeQuantity: 100,
-        exchangeFeedTime: candleTime.toISOString(),
-        exchangeTradeTime: candleTime.toISOString(),
-        netChange: parseFloat((close - open).toFixed(2)),
-        percentChange: parseFloat((((close - open) / open) * 100).toFixed(2)),
-        averagePrice: parseFloat(((close + open) / 2).toFixed(2)),
-        tradeVolume: Math.floor(Math.random() * 100000) + 10000,
-        openInterest: 0,
-        lowerCircuit: parseFloat((open * 0.9).toFixed(2)),
-        upperCircuit: parseFloat((open * 1.1).toFixed(2)),
-        totalBuyingQuantity: 0,
-        totalSellingQuantity: 0,
-        fiftyTwoWeekLow: parseFloat((basePrice * 0.7).toFixed(2)),
-        fiftyTwoWeekHigh: parseFloat((basePrice * 1.4).toFixed(2)),
-        depth: { buy: [], sell: [] },
-        timestamp: candleTime.toISOString(),
-      });
-    }
-    return candles;
-  }
-
-  /**
-   * Monitor WebSocket pool and stream real-time price updates for active stocks
-   */
-  private async fetchAndPublishTicks() {
+    
     try {
-      const activeStocks: string[] = [];
-      for (const conn of this.connections) {
-        activeStocks.push(...conn.subscribedStocks);
-      }
+      await this.authenticateAndConnect();
+    } catch (e: any) {
+      this.logger.error(`Daily re-authentication failed: ${e.message}`);
+    }
+  }
 
-      if (activeStocks.length === 0) {
-        this.logger.verbose('No active WebSocket connections in Angel One pool.');
-        return;
-      }
-
-      this.logger.log(`Publishing live prices for active stocks in pool: ${activeStocks.join(', ')}`);
-
-      for (const stock of activeStocks) {
-        let basePrice = this.currentStockPrices.get(stock);
-        if (!basePrice) {
-          basePrice = 1000 + Math.random() * 500;
-          this.currentStockPrices.set(stock, basePrice);
+  private async downloadScripMaster() {
+    this.logger.log(`Downloading Scrip Master from ${this.SCRIP_MASTER_URL}...`);
+    try {
+      const response = await fetch(this.SCRIP_MASTER_URL);
+      const data = (await response.json()) as any[];
+      
+      for (const item of data) {
+        // Safely check properties to prevent undefined errors
+        if (item && item.exch_seg === 'NSE' && typeof item.symbol === 'string' && item.symbol.endsWith('-EQ')) {
+          const baseSymbol = item.symbol.replace('-EQ', '');
+          this.symbolToTokenMap.set(baseSymbol, item.token);
+          this.tokenToSymbolMap.set(item.token, baseSymbol);
         }
+      }
+      this.logger.log(`Loaded ${this.symbolToTokenMap.size} NSE Equity symbols from Scrip Master.`);
+    } catch (error: any) {
+      this.logger.error(`Failed to download Scrip Master: ${error.message}`);
+      throw error;
+    }
+  }
 
-        const changePercent = (Math.random() - 0.5) * 0.002;
-        basePrice += basePrice * changePercent;
-        this.currentStockPrices.set(stock, basePrice);
+  private async authenticateAndConnect() {
+    const apiKey = process.env.ANGEL_ONE_API_KEY;
+    const clientId = process.env.ANGEL_ONE_CLIENT_ID;
+    const password = process.env.ANGEL_ONE_PASSWORD;
+    const totpSecret = process.env.ANGEL_ONE_TOTP_KEY;
+
+    if (!apiKey || !clientId || !password || !totpSecret) {
+      throw new Error('Missing Angel One credentials in environment variables.');
+    }
+
+    this.smartApi = new SmartAPI({
+      api_key: apiKey,
+    });
+
+    // Generate TOTP
+    const totp = speakeasy.totp({
+      secret: totpSecret,
+      encoding: 'base32',
+    });
+
+    this.logger.log(`Authenticating with Client ID ${clientId}...`);
+    
+    return new Promise((resolve, reject) => {
+      this.smartApi.generateSession(clientId, password, totp)
+        .then((data: any) => {
+          if (data.status) {
+            this.logger.log('Successfully authenticated with Angel One SmartAPI.');
+            
+            const jwtToken = data.data.jwtToken;
+            const feedToken = data.data.feedToken;
+            
+            this.initializeWebSocket(clientId, jwtToken, apiKey, feedToken);
+            resolve(true);
+          } else {
+            this.logger.error(`Authentication failed: ${data.message}`);
+            reject(new Error(data.message));
+          }
+        })
+        .catch((err: any) => {
+          this.logger.error(`Error during generateSession: ${err.message}`);
+          reject(err);
+        });
+    });
+  }
+
+  private initializeWebSocket(clientCode: string, jwtToken: string, apiKey: string, feedToken: string) {
+    this.logger.log('Initializing WebSocketV2...');
+    
+    this.webSocket = new WebSocketV2({
+      jwttoken: jwtToken,
+      apikey: apiKey,
+      clientcode: clientCode,
+      feedtoken: feedToken,
+    });
+
+    this.webSocket.connect()
+      .then(() => {
+        this.logger.log('Angel One WebSocket connected successfully.');
+        this.isConnected = true;
+        
+        // Resubscribe to currently tracked stocks after reconnection
+        this.resubscribeAll();
+      })
+      .catch((err: any) => {
+        this.logger.error(`Failed to connect WebSocket: ${err.message}`);
+      });
+
+    this.webSocket.on('tick', (receiveData: any[]) => {
+      this.handleTicks(receiveData);
+    });
+
+    this.webSocket.on('close', () => {
+      this.logger.warn('Angel One WebSocket closed. Will attempt reconnect or wait for next module init...');
+      this.isConnected = false;
+    });
+
+    this.webSocket.on('error', (err: any) => {
+      this.logger.error(`Angel One WebSocket error: ${JSON.stringify(err)}`);
+    });
+  }
+
+  private handleTicks(receiveData: any[]) {
+    for (const data of receiveData) {
+      try {
+        // Mode 3 provides Full Snap Quote including depth
+        const token = data.token;
+        const symbol = this.tokenToSymbolMap.get(token);
+        
+        if (!symbol) continue;
 
         const now = new Date();
-        const ltp = parseFloat(basePrice.toFixed(2));
-        const openVal = parseFloat((basePrice - 5).toFixed(2));
+        const ltp = data.last_traded_price ? data.last_traded_price / 100 : 0;
+        
+        if (ltp === 0) continue; // Skip if LTP is 0
 
         const depth: BestFiveDepth = {
-          buy: Array.from({ length: 5 }, (_, idx) => ({
-            price: parseFloat((ltp - 0.1 * (idx + 1)).toFixed(2)),
-            quantity: Math.floor(Math.random() * 200) + 10,
-            orders: Math.floor(Math.random() * 5) + 1,
-          })),
-          sell: Array.from({ length: 5 }, (_, idx) => ({
-            price: parseFloat((ltp + 0.1 * (idx + 1)).toFixed(2)),
-            quantity: Math.floor(Math.random() * 200) + 10,
-            orders: Math.floor(Math.random() * 5) + 1,
-          })),
+          buy: data.best_5_buy_data ? data.best_5_buy_data.map((b: any) => ({
+            price: b.price / 100,
+            quantity: b.quantity,
+            orders: b.no_of_orders
+          })) : [],
+          sell: data.best_5_sell_data ? data.best_5_sell_data.map((s: any) => ({
+            price: s.price / 100,
+            quantity: s.quantity,
+            orders: s.no_of_orders
+          })) : []
         };
 
         const tick: StockTick = {
-          stock,
+          stock: symbol,
           lastTradedPrice: ltp,
-          open: openVal,
-          high: parseFloat((ltp + 15).toFixed(2)),
-          low: parseFloat((ltp - 10).toFixed(2)),
-          close: parseFloat((basePrice - 2).toFixed(2)),
-          lastTradeQuantity: Math.floor(Math.random() * 50) + 1,
-          exchangeFeedTime: now.toISOString(),
-          exchangeTradeTime: now.toISOString(),
-          netChange: parseFloat((ltp - openVal).toFixed(2)),
-          percentChange: parseFloat((((ltp - openVal) / openVal) * 100).toFixed(2)),
-          averagePrice: parseFloat(((ltp + openVal) / 2).toFixed(2)),
-          tradeVolume: Math.floor(Math.random() * 50000) + 5000,
-          openInterest: Math.floor(Math.random() * 100000) + 20000,
-          lowerCircuit: parseFloat((openVal * 0.9).toFixed(2)),
-          upperCircuit: parseFloat((openVal * 1.1).toFixed(2)),
-          totalBuyingQuantity: Math.floor(Math.random() * 200000),
-          totalSellingQuantity: Math.floor(Math.random() * 200000),
-          fiftyTwoWeekLow: parseFloat((basePrice * 0.7).toFixed(2)),
-          fiftyTwoWeekHigh: parseFloat((basePrice * 1.4).toFixed(2)),
+          open: data.open_price_of_the_day ? data.open_price_of_the_day / 100 : ltp,
+          high: data.high_price_of_the_day ? data.high_price_of_the_day / 100 : ltp,
+          low: data.low_price_of_the_day ? data.low_price_of_the_day / 100 : ltp,
+          close: data.closed_price ? data.closed_price / 100 : ltp,
+          lastTradeQuantity: data.last_traded_quantity || 0,
+          exchangeFeedTime: data.exchange_timestamp ? new Date(data.exchange_timestamp).toISOString() : now.toISOString(),
+          exchangeTradeTime: data.exchange_timestamp ? new Date(data.exchange_timestamp).toISOString() : now.toISOString(),
+          netChange: 0, // Calculate if needed based on close
+          percentChange: 0, 
+          averagePrice: data.average_traded_price ? data.average_traded_price / 100 : ltp,
+          tradeVolume: data.volume_trade_for_the_day || 0,
+          openInterest: data.open_interest || 0,
+          lowerCircuit: data.lower_circuit_limit ? data.lower_circuit_limit / 100 : 0,
+          upperCircuit: data.upper_circuit_limit ? data.upper_circuit_limit / 100 : 0,
+          totalBuyingQuantity: data.total_buy_quantity || 0,
+          totalSellingQuantity: data.total_sell_quantity || 0,
+          fiftyTwoWeekLow: data.yearly_low_price ? data.yearly_low_price / 100 : 0,
+          fiftyTwoWeekHigh: data.yearly_high_price ? data.yearly_high_price / 100 : 0,
           depth,
           timestamp: now.toISOString(),
         };
 
-        const topic = `stock-tick-${stock}`;
-        await this.kafkaService.sendMessage(topic, tick);
-        await this.timescaleService.saveStockTick(tick);
+        // Calculate changes
+        if (tick.close > 0) {
+          tick.netChange = parseFloat((tick.lastTradedPrice - tick.close).toFixed(2));
+          tick.percentChange = parseFloat(((tick.netChange / tick.close) * 100).toFixed(2));
+        }
+
+        const topic = `stock-tick-${symbol}`;
+        this.kafkaService.sendMessage(topic, tick);
+        this.timescaleService.saveStockTick(tick);
+
+      } catch (err: any) {
+        this.logger.error(`Error processing tick data: ${err.message}`);
       }
-    } catch (err: any) {
-      this.logger.error(`Error in Angel One fetch cycle: ${err.message}`);
+    }
+  }
+
+  public subscribeStock(stock: string): boolean {
+    if (!this.symbolToTokenMap.has(stock)) {
+      this.logger.warn(`Cannot subscribe to ${stock}. Symbol not found in Scrip Master.`);
+      return false;
+    }
+
+    this.subscribedStocks.add(stock);
+
+    if (this.isConnected && this.webSocket) {
+      const token = this.symbolToTokenMap.get(stock);
+      const reqBody = {
+        correlationID: `sub-${stock}-${Date.now()}`,
+        action: 1, // 1 = subscribe
+        params: {
+          mode: 3, // 3 = Full Snap Quote
+          tokenList: [
+            {
+              exchangeType: 1, // 1 = NSE
+              tokens: [token],
+            },
+          ],
+        },
+      };
+      this.webSocket.fetchData(reqBody);
+      this.logger.log(`Subscribed to live feed for ${stock} (Token: ${token})`);
+    } else {
+      this.logger.log(`Queued subscription for ${stock}. WebSocket not yet connected.`);
+    }
+
+    return true;
+  }
+
+  public unsubscribeStock(stock: string) {
+    if (this.subscribedStocks.delete(stock) && this.isConnected && this.webSocket) {
+      const token = this.symbolToTokenMap.get(stock);
+      if (token) {
+        const reqBody = {
+          correlationID: `unsub-${stock}-${Date.now()}`,
+          action: 0, // 0 = unsubscribe
+          params: {
+            mode: 3,
+            tokenList: [
+              {
+                exchangeType: 1,
+                tokens: [token],
+              },
+            ],
+          },
+        };
+        this.webSocket.fetchData(reqBody);
+        this.logger.log(`Unsubscribed from live feed for ${stock}`);
+      }
+    }
+  }
+
+  private resubscribeAll() {
+    if (this.subscribedStocks.size === 0) return;
+    
+    this.logger.log(`Resubscribing to ${this.subscribedStocks.size} stocks...`);
+    const tokens: string[] = [];
+    for (const stock of this.subscribedStocks) {
+      const token = this.symbolToTokenMap.get(stock);
+      if (token) tokens.push(token);
+    }
+
+    if (tokens.length > 0) {
+      const reqBody = {
+        correlationID: `resub-all-${Date.now()}`,
+        action: 1,
+        params: {
+          mode: 3,
+          tokenList: [
+            {
+              exchangeType: 1,
+              tokens,
+            },
+          ],
+        },
+      };
+      this.webSocket.fetchData(reqBody);
+    }
+  }
+
+  async fetchHistoryAndAddStock(symbol: string, exchange: string): Promise<any> {
+    // History API can also be implemented using smartApi.getCandleData
+    // For now, we will just subscribe to the live feed
+    
+    this.logger.log(`Fetching history currently skipped, directly subscribing to live feed for ${symbol}...`);
+    
+    const subscribed = this.subscribeStock(symbol);
+
+    if (subscribed) {
+      await this.redisService.addSocketToStock('admin', symbol);
+      return {
+        success: true,
+        message: `Successfully subscribed stock "${symbol}" to real Angel One WebSocket.`,
+      };
+    } else {
+      return {
+        success: false,
+        message: `Could not find exchange token for "${symbol}". Check if it is a valid NSE Equity symbol.`,
+      };
     }
   }
 }
