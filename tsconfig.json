@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compileOnSave": false,
+  "files": [],
+  "references": [
+    {
+      "path": "./apps/auth-service"
+    },
+    {
+      "path": "./apps/chat-service"
+    },
+    {
+      "path": "./apps/admin-feature"
+    }
+  ]
+}

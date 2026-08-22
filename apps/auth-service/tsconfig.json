@@ -1,0 +1,72 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "jsx": "preserve",
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "noEmit": true,
+    "emitDeclarationOnly": false,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "lib": [
+      "dom",
+      "dom.iterable",
+      "esnext"
+    ],
+    "allowJs": true,
+    "allowSyntheticDefaultImports": true,
+    "forceConsistentCasingInFileNames": true,
+    "incremental": true,
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ],
+    "paths": {
+      "@/*": [
+        "./*"
+      ],
+      "@errHandling-index": [
+        "../../libs/error-handling/src/lib/index.ts"
+      ],
+      "@errorHandling-middleware": [
+        "../../libs/error-handling/src/lib/error-middleware.ts"
+      ]
+    },
+    "types": [
+      "jest",
+      "node"
+    ],
+    "outDir": "dist",
+    "rootDir": "../../",
+    "tsBuildInfoFile": "dist/tsconfig.tsbuildinfo"
+  },
+  "include": [
+    "app/**/*.ts",
+    "app/**/*.tsx",
+    "app/**/*.js",
+    "app/**/*.jsx",
+    "lib/**/*.ts",
+    "lib/**/*.tsx",
+    "lib/**/*.js",
+    "lib/**/*.jsx",
+    "../../apps/auth-service/.next/types/**/*.ts",
+    "../../dist/apps/auth-service/.next/types/**/*.ts",
+    "index.d.ts",
+    "next-env.d.ts"
+  ],
+  "exclude": [
+    "out-tsc",
+    "dist",
+    "node_modules",
+    "jest.config.ts",
+    "jest.config.cts",
+    "src/**/*.spec.ts",
+    "src/**/*.test.ts",
+    ".next",
+    "eslint.config.js",
+    "eslint.config.cjs",
+    "eslint.config.mjs"
+  ]
+}

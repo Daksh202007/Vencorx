@@ -1,0 +1,5 @@
+{
+  "AccountTag": "YOUR_CLOUDFLARE_ACCOUNT_TAG_HERE",
+  "TunnelSecret": "YOUR_CLOUDFLARE_TUNNEL_SECRET_HERE",
+  "TunnelID": "817d64a4-b9ed-425e-90ca-4f27901397e3"
+}

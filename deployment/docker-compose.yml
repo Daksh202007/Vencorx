@@ -1,0 +1,155 @@
+version: '3.8'
+
+services:
+  # SSL Certificate Generator (runs once on startup to create self-signed SSL certs)
+  cert-generator:
+    image: alpine:latest
+    container_name: cert_generator
+    volumes:
+      - ./nginx/certs:/etc/nginx/certs
+    entrypoint: >
+      /bin/sh -c "
+      apk add --no-cache openssl;
+      if [ ! -f /etc/nginx/certs/nginx.crt ]; then
+        echo 'Generating self-signed SSL certificates...';
+        mkdir -p /etc/nginx/certs;
+        openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+          -keyout /etc/nginx/certs/nginx.key \
+          -out /etc/nginx/certs/nginx.crt \
+          -subj '/CN=digitaldigimart.shop';
+      else
+        echo 'SSL certificates already exist.';
+      fi
+      "
+
+  # Nginx Reverse Proxy (SSL terminated here)
+  nginx:
+    image: nginx:alpine
+    container_name: nginx_proxy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+    depends_on:
+      cert-generator:
+        condition: service_completed_successfully
+    restart: always
+
+  # Cloudflared Tunnel
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared_tunnel
+    volumes:
+      - ./cloudflared/config.yml:/etc/cloudflared/config.yml:ro
+      - ./cloudflared/817d64a4-b9ed-425e-90ca-4f27901397e3.json:/etc/cloudflared/817d64a4-b9ed-425e-90ca-4f27901397e3.json:ro
+    command: tunnel --config /etc/cloudflared/config.yml run
+    depends_on:
+      - nginx
+    restart: always
+
+  # Monorepo Service 1: NextJS Auth Service
+  auth-service:
+    build:
+      context: ../
+      dockerfile: Dockerfile
+    container_name: auth_service
+    command: npx nx start auth-service
+    env_file:
+      - ../.env
+    environment:
+      - NODE_ENV=production
+    restart: always
+
+  # Monorepo Service 2: NestJS Chat & Stock Gateway Service
+  chat-service:
+    build:
+      context: ../
+      dockerfile: Dockerfile
+    container_name: chat_service
+    command: node apps/chat-service/dist/main.js
+    env_file:
+      - ../.env
+    environment:
+      - NODE_ENV=production
+      - PORT=3001
+      - AUTH_SERVICE_URL=http://auth-service:3000
+      - TIMESCALE_URL=postgresql://postgres:postgres@timescaledb:5432/timescaledb
+      - KAFKA_BROKERS=kafka:29092
+    depends_on:
+      - timescaledb
+      - kafka
+      - auth-service
+    restart: always
+
+  # Monorepo Service 3: NextJS Admin Dashboard UI
+  admin-feature:
+    build:
+      context: ../
+      dockerfile: Dockerfile
+    container_name: admin_feature
+    command: npx nx start admin-feature
+    env_file:
+      - ../.env
+    environment:
+      - NODE_ENV=production
+    restart: always
+
+  # Database: TimescaleDB (PostgreSQL for Stock Tick History)
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: ai_tradesignal_timescaledb
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: timescaledb
+    ports:
+      - '5432:5432'
+    volumes:
+      - timescale_data:/var/lib/postgresql/data
+    restart: always
+
+  # Database Administration: pgAdmin
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: ai_tradesignal_pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@tradesignal.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - '5050:80'
+    depends_on:
+      - timescaledb
+    restart: always
+
+  # Broker Coordination: Zookeeper
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.0
+    container_name: ai_tradesignal_zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - '2181:2181'
+
+  # Broker: Apache Kafka
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: ai_tradesignal_kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - '9092:9092'
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,PLAINTEXT_INTERNAL://kafka:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_INTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT_INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+
+volumes:
+  timescale_data:

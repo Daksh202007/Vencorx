@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body { font-family: Arial, sans-serif; background-color: #f4f4f4; padding: 20px; }
+        .container { background-color: #ffffff; padding: 20px; border-radius: 8px; max-width: 600px; margin: auto; }
+        .code { font-size: 24px; font-weight: bold; color: #333; text-align: center; margin: 20px 0; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>Hello <%= user.name %>,</h2>
+        <p>Thank you for registering. Please use the following OTP to activate your account:</p>
+        <div class="code"><%= activationCode %></div>
+        <p>This code is valid for 5 minutes.</p>
+    </div>
+</body>
+</html>
