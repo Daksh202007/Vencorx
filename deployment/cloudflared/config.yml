@@ -2,7 +2,7 @@ tunnel: 817d64a4-b9ed-425e-90ca-4f27901397e3
 credentials-file: /etc/cloudflared/817d64a4-b9ed-425e-90ca-4f27901397e3.json
 
 ingress:
-  - hostname: digitaldigimart.shop
+  - hostname: Vencorx.digitaldigimart.shop
     service: https://nginx:443
     originRequest:
       noTLSVerify: true
