@@ -111,3 +111,21 @@ To stop the stack:
 ```powershell
 docker compose down
 ```
+
+---
+
+## 🤖 Automated CI/CD Deployment
+
+We have configured a GitHub Actions workflow in [`.github/workflows/deploy.yml`](file:///.github/workflows/deploy.yml) that triggers automatically on every push to the `master` or `main` branches.
+
+### Setup Instructions:
+1. **Add GitHub Secret**: Go to your GitHub repository $\rightarrow$ Settings $\rightarrow$ Secrets and variables $\rightarrow$ Actions $\rightarrow$ New repository secret, and add:
+   - Name: `VPS_SSH_KEY`
+   - Value: Paste the contents of your private SSH key used to connect to the VPS.
+2. **First-time VPS Setup**:
+   Connect to your VPS manually once and create the `.env` configuration file in the target directory:
+   ```bash
+   mkdir -p /root/ai-tradesignal
+   nano /root/ai-tradesignal/.env
+   ```
+   Paste all your production environment configurations (MongoDB connections, credentials, JWT keys, etc.) here. This file is ignored by Git and will remain persistent across automated deploys.
