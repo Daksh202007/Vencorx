@@ -10,7 +10,7 @@ WORKDIR /app
 COPY package*.json tsconfig.base.json nx.json ./
 
 # Install development and production dependencies
-RUN npm ci
+RUN npm install
 
 # Copy the Prisma schema and generate the Prisma Client
 COPY prisma ./prisma
