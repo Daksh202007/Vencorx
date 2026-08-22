@@ -60,6 +60,7 @@ services:
       - ../.env
     environment:
       - NODE_ENV=production
+      - HOSTNAME=0.0.0.0
     restart: always
 
   # Monorepo Service 2: NestJS Chat & Stock Gateway Service
@@ -94,6 +95,7 @@ services:
       - ../.env
     environment:
       - NODE_ENV=production
+      - HOSTNAME=0.0.0.0
     restart: always
 
   # Database: TimescaleDB (PostgreSQL for Stock Tick History)
