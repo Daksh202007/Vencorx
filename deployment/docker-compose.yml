@@ -7,20 +7,18 @@ services:
     container_name: cert_generator
     volumes:
       - ./nginx/certs:/etc/nginx/certs
-    entrypoint: >
-      /bin/sh -c "
-      apk add --no-cache openssl;
-      if [ ! -f /etc/nginx/certs/nginx.crt ]; then
-        echo 'Generating self-signed SSL certificates...';
-        mkdir -p /etc/nginx/certs;
-        openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-          -keyout /etc/nginx/certs/nginx.key \
-          -out /etc/nginx/certs/nginx.crt \
-          -subj '/CN=digitaldigimart.shop';
-      else
-        echo 'SSL certificates already exist.';
-      fi
-      "
+    command:
+      - /bin/sh
+      - -c
+      - |
+        apk add --no-cache openssl
+        if [ ! -f /etc/nginx/certs/nginx.crt ]; then
+          echo 'Generating self-signed SSL certificates...'
+          mkdir -p /etc/nginx/certs
+          openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout /etc/nginx/certs/nginx.key -out /etc/nginx/certs/nginx.crt -subj '/CN=digitaldigimart.shop'
+        else
+          echo 'SSL certificates already exist.'
+        fi
 
   # Nginx Reverse Proxy (SSL terminated here)
   nginx:
