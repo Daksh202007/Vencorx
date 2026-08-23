@@ -9,6 +9,17 @@ export interface ChatMessage {
   timestamp: string;
 }
 
+export interface AngelCandle {
+  symbol: string;
+  resolution: string;
+  timestamp: Date;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
 export interface OrderDepth {
   price: number;
   quantity: number;
@@ -145,6 +156,30 @@ export class TimescaleService implements OnModuleInit, OnModuleDestroy {
           PRIMARY KEY (id, timestamp)
         );
       `);
+      
+      // Create Angel One historical candles table
+      await this.pool.query(`
+        CREATE TABLE IF NOT EXISTS angel_candles (
+          symbol VARCHAR(50) NOT NULL,
+          resolution VARCHAR(10) NOT NULL,
+          open_price NUMERIC NOT NULL,
+          high_price NUMERIC NOT NULL,
+          low_price NUMERIC NOT NULL,
+          close_price NUMERIC NOT NULL,
+          volume BIGINT NOT NULL,
+          timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
+          PRIMARY KEY (symbol, resolution, timestamp)
+        );
+      `);
+
+      try {
+        await this.pool.query(`
+          SELECT create_hypertable('angel_candles', 'timestamp', if_not_exists => TRUE);
+        `);
+        this.logger.log('TimescaleDB hypertable successfully verified/created for angel_candles.');
+      } catch (e: any) {
+        this.logger.log('TimescaleDB extension not active/installed for angel_candles. Running on standard PostgreSQL table.');
+      }
       
       this.logger.log('Database tables successfully initialized.');
     } catch (err: any) {
@@ -342,5 +377,72 @@ export class TimescaleService implements OnModuleInit, OnModuleDestroy {
 
     const ticks = this.mockStockTicks.get(stock) || [];
     return ticks.slice(-limit);
+  }
+
+  /**
+   * Save Angel One historical candles to DB
+   */
+  async saveAngelCandles(candles: AngelCandle[]): Promise<void> {
+    if (!this.pool || !this.isConnected || candles.length === 0) return;
+
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      for (const candle of candles) {
+        await client.query(
+          `INSERT INTO angel_candles (
+            symbol, resolution, open_price, high_price, low_price, close_price, volume, timestamp
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+          ON CONFLICT (symbol, resolution, timestamp) DO UPDATE SET
+            open_price = EXCLUDED.open_price,
+            high_price = EXCLUDED.high_price,
+            low_price = EXCLUDED.low_price,
+            close_price = EXCLUDED.close_price,
+            volume = EXCLUDED.volume`,
+          [
+            candle.symbol, candle.resolution, candle.open, candle.high,
+            candle.low, candle.close, candle.volume, candle.timestamp
+          ]
+        );
+      }
+      await client.query('COMMIT');
+    } catch (err: any) {
+      await client.query('ROLLBACK');
+      this.logger.error(`Database write failed for angel candles: ${err.message}`);
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Get Angel One historical candles from DB
+   */
+  async getHistoricalAngelCandles(symbol: string, resolution: string, from: Date, to: Date): Promise<AngelCandle[]> {
+    if (!this.pool || !this.isConnected) return [];
+
+    try {
+      const result = await this.pool.query(
+        `SELECT 
+          symbol, resolution, open_price as "open", high_price as "high",
+          low_price as "low", close_price as "close", volume, timestamp
+        FROM angel_candles 
+        WHERE symbol = $1 AND resolution = $2 AND timestamp >= $3 AND timestamp <= $4
+        ORDER BY timestamp ASC`,
+        [symbol, resolution, from, to]
+      );
+      
+      return result.rows.map(row => ({
+        ...row,
+        open: parseFloat(row.open),
+        high: parseFloat(row.high),
+        low: parseFloat(row.low),
+        close: parseFloat(row.close),
+        volume: parseInt(row.volume, 10),
+        timestamp: new Date(row.timestamp)
+      }));
+    } catch (err: any) {
+      this.logger.error(`Database read failed for angel historical candles: ${err.message}`);
+      return [];
+    }
   }
 }

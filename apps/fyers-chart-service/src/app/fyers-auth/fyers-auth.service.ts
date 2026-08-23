@@ -24,9 +24,9 @@ export class FyersAuthService implements OnModuleInit {
   }
 
   /**
-   * Run every Monday to Friday at 8:05 AM IST.
+   * Run EVERY DAY at 8:05 AM IST.
    */
-  @Cron('5 8 * * 1-5', { timeZone: 'Asia/Kolkata' })
+  @Cron('5 8 * * *', { timeZone: 'Asia/Kolkata' })
   async generateDailyToken() {
     this.logger.log('Starting daily Fyers token generation cron job...');
     try {

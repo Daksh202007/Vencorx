@@ -99,4 +99,53 @@ export class FyersDataService {
     
     return await this.fetchAndSaveHistory(symbol, resolution, fromStr, toStr);
   }
+
+  /**
+   * Throttled background fetcher for 1 year of 1m, 15m, 4h data
+   * Fetches in 90-day chunks and sleeps between requests to avoid rate limits
+   */
+  async fetchThrottledHistory(symbol: string) {
+    this.logger.log(`Starting background throttled fetch for ${symbol} (1 year data)...`);
+    
+    const now = new Date();
+    const oneYearAgo = new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000);
+    
+    const resolutions = ['1', '15', '240'];
+    const chunkDays = 90; // 90 days max per request
+    const chunkMs = chunkDays * 24 * 60 * 60 * 1000;
+    
+    for (const res of resolutions) {
+      let currentFrom = oneYearAgo.getTime();
+      const endTime = now.getTime();
+      
+      while (currentFrom < endTime) {
+        let currentTo = currentFrom + chunkMs;
+        if (currentTo > endTime) currentTo = endTime;
+        
+        const fromStr = Math.floor(currentFrom / 1000).toString();
+        const toStr = Math.floor(currentTo / 1000).toString();
+        
+        try {
+          this.logger.log(`[Throttled Fetch] ${symbol} Res: ${res}, From: ${new Date(currentFrom).toLocaleDateString()}, To: ${new Date(currentTo).toLocaleDateString()}`);
+          await this.fetchAndSaveHistory(symbol, res, fromStr, toStr);
+        } catch (e: any) {
+          this.logger.error(`Throttled fetch error for ${symbol} res ${res}: ${e.message}`);
+        }
+        
+        // Sleep 3 seconds between chunks to protect server and API limits
+        await this.sleep(3000);
+        
+        currentFrom = currentTo;
+      }
+      
+      // Extra sleep between resolutions
+      await this.sleep(5000);
+    }
+    
+    this.logger.log(`Finished background throttled fetch for ${symbol}`);
+  }
+
+  private sleep(ms: number) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
 }

@@ -26,4 +26,23 @@ export class FyersInternalController {
       throw new HttpException(error.message, HttpStatus.INTERNAL_SERVER_ERROR);
     }
   }
+
+  @Post('fetch-all-history')
+  async fetchAllHistory(@Body() body: { symbol: string }) {
+    const { symbol } = body;
+    
+    if (!symbol) {
+      throw new HttpException('Missing symbol parameter', HttpStatus.BAD_REQUEST);
+    }
+
+    // Trigger asynchronously so it doesn't block the response
+    this.fyersDataService.fetchThrottledHistory(symbol).catch(e => {
+      console.error(`Background fetch failed for ${symbol}:`, e);
+    });
+
+    return { 
+      success: true, 
+      message: `Throttled background fetching of 1-year historical data (1m, 15m, 4h) started for ${symbol}` 
+    };
+  }
 }

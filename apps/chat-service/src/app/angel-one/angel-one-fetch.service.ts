@@ -325,10 +325,17 @@ export class AngelOneFetchService implements OnModuleInit, OnModuleDestroy {
   }
 
   async fetchHistoryAndAddStock(symbol: string, exchange: string): Promise<any> {
-    // History API can also be implemented using smartApi.getCandleData
-    // For now, we will just subscribe to the live feed
+    const token = this.symbolToTokenMap.get(symbol);
+    if (!token) {
+      return { success: false, error: `Token not found for symbol ${symbol}` };
+    }
+
+    // Trigger background throttled fetch asynchronously so it doesn't block
+    this.fetchThrottledAngelHistory(symbol, exchange, token).catch(e => {
+      this.logger.error(`Background fetch failed for ${symbol}: ${e.message}`);
+    });
     
-    this.logger.log(`Fetching history currently skipped, directly subscribing to live feed for ${symbol}...`);
+    this.logger.log(`Subscribing to live feed for ${symbol}...`);
     
     const subscribed = this.subscribeStock(symbol);
 
@@ -336,13 +343,79 @@ export class AngelOneFetchService implements OnModuleInit, OnModuleDestroy {
       await this.redisService.addSocketToStock('admin', symbol);
       return {
         success: true,
-        message: `Successfully subscribed stock "${symbol}" to real Angel One WebSocket.`,
+        message: `Successfully subscribed stock "${symbol}" to real Angel One WebSocket. Historical daily data fetching started in background.`,
       };
     } else {
-      return {
-        success: false,
-        message: `Could not find exchange token for "${symbol}". Check if it is a valid NSE Equity symbol.`,
-      };
+      return { success: false, error: 'Failed to subscribe' };
     }
+  }
+
+  /**
+   * Throttled background fetcher for 5 years of daily Angel One data
+   */
+  async fetchThrottledAngelHistory(symbol: string, exchange: string, token: string) {
+    if (!this.smartApi) return;
+    
+    this.logger.log(`Starting background throttled fetch for Angel One ${symbol} (5 years daily data)...`);
+    
+    const now = new Date();
+    // 5 years ago
+    const fiveYearsAgo = new Date(now.getTime() - 5 * 365 * 24 * 60 * 60 * 1000);
+    
+    let currentFrom = fiveYearsAgo.getTime();
+    const endTime = now.getTime();
+    
+    // Chunk by 365 days
+    const chunkMs = 365 * 24 * 60 * 60 * 1000;
+    
+    while (currentFrom < endTime) {
+      let currentTo = currentFrom + chunkMs;
+      if (currentTo > endTime) currentTo = endTime;
+      
+      const fromDate = this.formatAngelDate(new Date(currentFrom));
+      const toDate = this.formatAngelDate(new Date(currentTo));
+      
+      try {
+        this.logger.log(`[Throttled Angel Fetch] ${symbol} From: ${fromDate}, To: ${toDate}`);
+        const response = await this.smartApi.getCandleData({
+          exchange: exchange === 'NSE' ? 'NSE' : exchange,
+          symboltoken: token,
+          interval: 'ONE_DAY',
+          fromdate: fromDate,
+          todate: toDate
+        });
+        
+        if (response && response.status && response.data) {
+          const candles = response.data.map((c: any) => ({
+            symbol,
+            resolution: 'ONE_DAY',
+            timestamp: new Date(c[0]),
+            open: c[1],
+            high: c[2],
+            low: c[3],
+            close: c[4],
+            volume: c[5]
+          }));
+          await this.timescaleService.saveAngelCandles(candles);
+        }
+      } catch (e: any) {
+        this.logger.error(`Angel fetch error for ${symbol}: ${e.message}`);
+      }
+      
+      // Sleep 2 seconds between chunks to protect server and API limits
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      currentFrom = currentTo;
+    }
+    this.logger.log(`Finished background throttled fetch for Angel One ${symbol}`);
+  }
+
+  private formatAngelDate(date: Date): string {
+    const yyyy = date.getFullYear();
+    const mm = String(date.getMonth() + 1).padStart(2, '0');
+    const dd = String(date.getDate()).padStart(2, '0');
+    const hh = String(date.getHours()).padStart(2, '0');
+    const min = String(date.getMinutes()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd} ${hh}:${min}`;
   }
 }
