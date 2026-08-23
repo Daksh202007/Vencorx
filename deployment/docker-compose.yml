@@ -33,6 +33,10 @@ services:
     depends_on:
       cert-generator:
         condition: service_completed_successfully
+    deploy:
+      resources:
+        limits:
+          memory: 250M
     restart: always
 
   # Cloudflared Tunnel
@@ -59,6 +63,10 @@ services:
     environment:
       - NODE_ENV=production
       - HOSTNAME=0.0.0.0
+    deploy:
+      resources:
+        limits:
+          memory: 750M
     restart: always
 
   # Monorepo Service 2: NestJS Chat & Stock Gateway Service
@@ -80,6 +88,10 @@ services:
       - timescaledb
       - kafka
       - auth-service
+    deploy:
+      resources:
+        limits:
+          memory: 1G
     restart: always
 
   # Monorepo Service 2B: NestJS Fyers Chart Service
@@ -99,6 +111,10 @@ services:
     depends_on:
       - timescaledb
       - kafka
+    deploy:
+      resources:
+        limits:
+          memory: 1G
     restart: always
 
   # Monorepo Service 3: NextJS Admin Dashboard UI
@@ -142,6 +158,10 @@ services:
       - '5432:5432'
     volumes:
       - timescale_data:/var/lib/postgresql/data
+    deploy:
+      resources:
+        limits:
+          memory: 2.5G
     restart: always
 
   # Database Administration: pgAdmin
@@ -165,15 +185,22 @@ services:
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
+    deploy:
+      resources:
+        limits:
+          memory: 500M
     ports:
       - '2181:2181'
 
-  # Broker: Apache Kafka
   kafka:
     image: confluentinc/cp-kafka:7.4.0
     container_name: ai_tradesignal_kafka
     depends_on:
       - zookeeper
+    deploy:
+      resources:
+        limits:
+          memory: 1G
     ports:
       - '9092:9092'
     environment:
