@@ -16,9 +16,8 @@ export class AngelOneFetchService implements OnModuleInit, OnModuleDestroy {
   private webSocket: any;
   private isConnected = false;
   
-  // Mapping for Symbol to Exchange Token (e.g. "RELIANCE" -> "32250")
-  private symbolToTokenMap = new Map<string, string>();
-  private tokenToSymbolMap = new Map<string, string>();
+  // Map of currently subscribed tokens to symbols (used by ticks handler for performance)
+  private activeTokenToSymbolMap = new Map<string, string>();
   
   // Scrip master URL
   private readonly SCRIP_MASTER_URL = 'https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json';
@@ -77,15 +76,15 @@ export class AngelOneFetchService implements OnModuleInit, OnModuleDestroy {
       const response = await fetch(this.SCRIP_MASTER_URL);
       const data = (await response.json()) as any[];
       
+      const tokensToInsert: { symbol: string; token: string }[] = [];
       for (const item of data) {
-        // Safely check properties to prevent undefined errors
+        // Keep the exact symbol like "RELIANCE-EQ"
         if (item && item.exch_seg === 'NSE' && typeof item.symbol === 'string' && item.symbol.endsWith('-EQ')) {
-          const baseSymbol = item.symbol.replace('-EQ', '');
-          this.symbolToTokenMap.set(baseSymbol, item.token);
-          this.tokenToSymbolMap.set(item.token, baseSymbol);
+          tokensToInsert.push({ symbol: item.symbol, token: item.token });
         }
       }
-      this.logger.log(`Loaded ${this.symbolToTokenMap.size} NSE Equity symbols from Scrip Master.`);
+      this.logger.log(`Parsed ${tokensToInsert.length} NSE Equity symbols from Scrip Master. Saving to PostgreSQL...`);
+      await this.timescaleService.bulkUpsertScripMaster(tokensToInsert);
     } catch (error: any) {
       this.logger.error(`Failed to download Scrip Master: ${error.message}`);
       throw error;
@@ -178,7 +177,7 @@ export class AngelOneFetchService implements OnModuleInit, OnModuleDestroy {
       try {
         // Mode 3 provides Full Snap Quote including depth
         const token = data.token;
-        const symbol = this.tokenToSymbolMap.get(token);
+        const symbol = this.activeTokenToSymbolMap.get(token);
         
         if (!symbol) continue;
 
@@ -236,21 +235,22 @@ export class AngelOneFetchService implements OnModuleInit, OnModuleDestroy {
         this.timescaleService.saveStockTick(tick);
 
       } catch (err: any) {
-        this.logger.error(`Error processing tick data: ${err.message}`);
+      this.logger.error(`Error processing tick data: ${err.message}`);
       }
     }
   }
 
-  public subscribeStock(stock: string): boolean {
-    if (!this.symbolToTokenMap.has(stock)) {
-      this.logger.warn(`Cannot subscribe to ${stock}. Symbol not found in Scrip Master.`);
+  public async subscribeStock(stock: string): Promise<boolean> {
+    const token = await this.timescaleService.getTokenForSymbol(stock);
+    if (!token) {
+      this.logger.warn(`Cannot subscribe to ${stock}. Symbol not found in PostgreSQL Scrip Master.`);
       return false;
     }
 
     this.subscribedStocks.add(stock);
+    this.activeTokenToSymbolMap.set(token, stock);
 
     if (this.isConnected && this.webSocket) {
-      const token = this.symbolToTokenMap.get(stock);
       const reqBody = {
         correlationID: `sub-${stock}-${Date.now()}`,
         action: 1, // 1 = subscribe
@@ -269,41 +269,48 @@ export class AngelOneFetchService implements OnModuleInit, OnModuleDestroy {
     } else {
       this.logger.log(`Queued subscription for ${stock}. WebSocket not yet connected.`);
     }
-
     return true;
   }
 
-  public unsubscribeStock(stock: string) {
-    if (this.subscribedStocks.delete(stock) && this.isConnected && this.webSocket) {
-      const token = this.symbolToTokenMap.get(stock);
+  public async unsubscribeStock(stock: string) {
+    if (this.subscribedStocks.has(stock)) {
+      this.subscribedStocks.delete(stock);
+      
+      const token = await this.timescaleService.getTokenForSymbol(stock);
       if (token) {
-        const reqBody = {
-          correlationID: `unsub-${stock}-${Date.now()}`,
-          action: 0, // 0 = unsubscribe
-          params: {
-            mode: 3,
-            tokenList: [
-              {
-                exchangeType: 1,
-                tokens: [token],
-              },
-            ],
-          },
-        };
-        this.webSocket.fetchData(reqBody);
-        this.logger.log(`Unsubscribed from live feed for ${stock}`);
+        this.activeTokenToSymbolMap.delete(token);
+        if (this.isConnected && this.webSocket) {
+          const reqBody = {
+            correlationID: `unsub-${stock}-${Date.now()}`,
+            action: 0, // 0 = unsubscribe
+            params: {
+              mode: 3,
+              tokenList: [
+                {
+                  exchangeType: 1,
+                  tokens: [token],
+                },
+              ],
+            },
+          };
+          this.webSocket.fetchData(reqBody);
+          this.logger.log(`Unsubscribed from live feed for ${stock}`);
+        }
       }
     }
   }
 
-  private resubscribeAll() {
+  private async resubscribeAll() {
     if (this.subscribedStocks.size === 0) return;
     
     this.logger.log(`Resubscribing to ${this.subscribedStocks.size} stocks...`);
     const tokens: string[] = [];
     for (const stock of this.subscribedStocks) {
-      const token = this.symbolToTokenMap.get(stock);
-      if (token) tokens.push(token);
+      const token = await this.timescaleService.getTokenForSymbol(stock);
+      if (token) {
+        tokens.push(token);
+        this.activeTokenToSymbolMap.set(token, stock);
+      }
     }
 
     if (tokens.length > 0) {
@@ -325,9 +332,9 @@ export class AngelOneFetchService implements OnModuleInit, OnModuleDestroy {
   }
 
   async fetchHistoryAndAddStock(symbol: string, exchange: string): Promise<any> {
-    const token = this.symbolToTokenMap.get(symbol);
+    const token = await this.timescaleService.getTokenForSymbol(symbol);
     if (!token) {
-      return { success: false, error: `Token not found for symbol ${symbol}` };
+      return { success: false, error: `Token not found for symbol ${symbol} in PostgreSQL database.` };
     }
 
     // Trigger background throttled fetch asynchronously so it doesn't block
@@ -337,8 +344,8 @@ export class AngelOneFetchService implements OnModuleInit, OnModuleDestroy {
     
     this.logger.log(`Subscribing to live feed for ${symbol}...`);
     
-    const subscribed = this.subscribeStock(symbol);
-
+    const subscribed = await this.subscribeStock(symbol);
+    
     if (subscribed) {
       await this.redisService.addSocketToStock('admin', symbol);
       return {

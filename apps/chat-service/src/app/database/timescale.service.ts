@@ -181,6 +181,14 @@ export class TimescaleService implements OnModuleInit, OnModuleDestroy {
         this.logger.log('TimescaleDB extension not active/installed for angel_candles. Running on standard PostgreSQL table.');
       }
       
+      // Create Scrip Master table (No hypertable needed as it's not time-series data)
+      await this.pool.query(`
+        CREATE TABLE IF NOT EXISTS scrip_master (
+          symbol VARCHAR(50) PRIMARY KEY,
+          token VARCHAR(50) NOT NULL
+        );
+      `);
+      
       this.logger.log('Database tables successfully initialized.');
     } catch (err: any) {
       this.logger.error(`Failed to initialize database tables: ${err.message}`);
@@ -443,6 +451,79 @@ export class TimescaleService implements OnModuleInit, OnModuleDestroy {
     } catch (err: any) {
       this.logger.error(`Database read failed for angel historical candles: ${err.message}`);
       return [];
+    }
+  }
+
+  /**
+   * Bulk UPSERT Scrip Master tokens into PostgreSQL
+   */
+  async bulkUpsertScripMaster(tokens: { symbol: string; token: string }[]): Promise<void> {
+    if (!this.pool || !this.isConnected || tokens.length === 0) return;
+
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      
+      // We will batch insert using unnest for maximum performance
+      // Prepare arrays of symbols and tokens
+      const symbols = tokens.map(t => t.symbol);
+      const tokenVals = tokens.map(t => t.token);
+      
+      await client.query(`
+        INSERT INTO scrip_master (symbol, token) 
+        SELECT * FROM UNNEST($1::text[], $2::text[]) 
+        ON CONFLICT (symbol) DO UPDATE SET token = EXCLUDED.token;
+      `, [symbols, tokenVals]);
+      
+      await client.query('COMMIT');
+      this.logger.log(`Successfully upserted ${tokens.length} tokens into scrip_master table.`);
+    } catch (err: any) {
+      await client.query('ROLLBACK');
+      this.logger.error(`Failed to bulk upsert scrip master: ${err.message}`);
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Get token for a specific symbol
+   */
+  async getTokenForSymbol(symbol: string): Promise<string | null> {
+    if (!this.pool || !this.isConnected) return null;
+
+    try {
+      const result = await this.pool.query(
+        'SELECT token FROM scrip_master WHERE symbol = $1',
+        [symbol]
+      );
+      if (result.rows.length > 0) {
+        return result.rows[0].token;
+      }
+      return null;
+    } catch (err: any) {
+      this.logger.error(`Failed to fetch token for symbol ${symbol}: ${err.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Get symbol for a specific token
+   */
+  async getSymbolForToken(token: string): Promise<string | null> {
+    if (!this.pool || !this.isConnected) return null;
+
+    try {
+      const result = await this.pool.query(
+        'SELECT symbol FROM scrip_master WHERE token = $1',
+        [token]
+      );
+      if (result.rows.length > 0) {
+        return result.rows[0].symbol;
+      }
+      return null;
+    } catch (err: any) {
+      this.logger.error(`Failed to fetch symbol for token ${token}: ${err.message}`);
+      return null;
     }
   }
 }
