@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { FyersAuthService } from '../fyers-auth/fyers-auth.service';
 import { TimescaleService, FyersCandle } from '../database/timescale.service';
+import { KafkaService } from '../kafka/kafka.service';
 import axios from 'axios';
 
 @Injectable()
@@ -10,7 +11,8 @@ export class FyersDataService {
 
   constructor(
     private readonly fyersAuthService: FyersAuthService,
-    private readonly timescaleService: TimescaleService
+    private readonly timescaleService: TimescaleService,
+    private readonly kafkaService: KafkaService
   ) {}
 
   /**
@@ -59,6 +61,14 @@ export class FyersDataService {
         this.logger.log(`Fetched ${candles.length} candles for ${symbol} at resolution ${resolution}. Saving to DB...`);
         
         await this.timescaleService.saveCandles(candles);
+        
+        // Emit Kafka message for real-time frontend push
+        await this.kafkaService.sendMessage(`fyers-chart-update-${symbol}-${resolution}`, {
+          symbol,
+          resolution,
+          candles,
+        });
+        
         return candles;
       } else {
         this.logger.error(`Fyers API error: ${JSON.stringify(response.data)}`);

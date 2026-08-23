@@ -56,7 +56,7 @@ export class AngelOneFetchService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  @Cron('30 8 * * *')
+  @Cron('30 8 * * 1-5', { timeZone: 'Asia/Kolkata' })
   async handleDailyRestart() {
     this.logger.log('Executing daily 8:30 AM CRON job: Re-authenticating with Angel One...');
     if (this.webSocket) {

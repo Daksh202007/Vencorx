@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ScheduleModule } from '@nestjs/schedule';
 
 import { AppController } from './app.controller';
+import { FyersInternalController } from './fyers-internal.controller';
 import { AppService } from './app.service';
 import { DatabaseModule } from './database/database.module';
 import { RedisModule } from './redis/redis.module';
@@ -18,7 +19,7 @@ import { GatewayModule } from './gateway/gateway.module';
     FyersDataModule,
     GatewayModule,
   ],
-  controllers: [AppController],
+  controllers: [AppController, FyersInternalController],
   providers: [AppService],
 })
 export class AppModule {}

@@ -14,6 +14,7 @@ import { RedisService } from '../redis/redis.service';
 import { KafkaService } from '../kafka/kafka.service';
 import { TimescaleService } from '../database/timescale.service';
 import { AngelOneFetchService } from '../angel-one/angel-one-fetch.service';
+import axios from 'axios';
 
 @WebSocketGateway({
   cors: {
@@ -167,5 +168,66 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect {
         }
       );
     }
+  }
+
+  /**
+   * Event: subscribe_fyers
+   * Client subscribes to historical/live chart updates from Fyers
+   */
+  @SubscribeMessage('subscribe_fyers')
+  async handleFyersSubscription(
+    @MessageBody() payload: { symbol: string; resolution: string; from?: string; to?: string },
+    @ConnectedSocket() socket: Socket
+  ) {
+    let { symbol, resolution, from, to } = payload;
+    if (!symbol || !resolution) return;
+
+    // Default to last 5 days if from/to not provided
+    if (!from || !to) {
+      const now = new Date();
+      const fiveDaysAgo = new Date(now.getTime() - 5 * 24 * 60 * 60 * 1000);
+      to = Math.floor(now.getTime() / 1000).toString();
+      from = Math.floor(fiveDaysAgo.getTime() / 1000).toString();
+    }
+
+    const roomName = `fyers:${symbol}:${resolution}`;
+    this.logger.log(`Socket ${socket.id} subscribing to Fyers: ${roomName}`);
+    socket.join(roomName);
+
+    try {
+      // Trigger internal API call to Fyers Chart Service to ensure data is fetched and TSDB is updated
+      await axios.post('http://fyers_chart_service:3002/api/fyers/internal/subscribe', {
+        symbol,
+        resolution,
+        from,
+        to
+      });
+
+      // Register dynamic Kafka consumer to listen to updates from Fyers Chart Service
+      await this.kafkaService.registerConsumer(
+        `fyers-chart-update-${symbol}-${resolution}`,
+        `ws-group-fyers-${symbol}-${resolution}`,
+        (updateData) => {
+          // Push directly to clients exactly when TSDB was updated
+          this.server.to(roomName).emit('fyers_chart_update', updateData);
+        }
+      );
+    } catch (error: any) {
+      this.logger.error(`Failed to subscribe to Fyers data: ${error.message}`);
+      socket.emit('error', { message: 'Failed to subscribe to chart data' });
+    }
+  }
+
+  @SubscribeMessage('unsubscribe_fyers')
+  async handleFyersUnsubscription(
+    @MessageBody() payload: { symbol: string; resolution: string },
+    @ConnectedSocket() socket: Socket
+  ) {
+    const { symbol, resolution } = payload;
+    if (!symbol || !resolution) return;
+
+    const roomName = `fyers:${symbol}:${resolution}`;
+    this.logger.log(`Socket ${socket.id} unsubscribing from Fyers: ${roomName}`);
+    socket.leave(roomName);
   }
 }
