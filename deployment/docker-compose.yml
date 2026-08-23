@@ -115,6 +115,20 @@ services:
       - HOSTNAME=0.0.0.0
     restart: always
 
+  # Monorepo Service 4: NextJS Feature Service
+  feature-service:
+    build:
+      context: ../
+      dockerfile: Dockerfile
+    container_name: feature_service
+    command: npx nx start feature-service
+    env_file:
+      - ../.env
+    environment:
+      - NODE_ENV=production
+      - HOSTNAME=0.0.0.0
+    restart: always
+
   # Database: TimescaleDB (PostgreSQL for Stock Tick History)
   timescaledb:
     image: timescale/timescaledb:latest-pg16
