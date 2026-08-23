@@ -113,6 +113,7 @@ services:
     environment:
       - NODE_ENV=production
       - HOSTNAME=0.0.0.0
+      - CHAT_SERVICE_URL=http://chat_service:3001
     restart: always
 
   # Monorepo Service 4: NextJS Feature Service
