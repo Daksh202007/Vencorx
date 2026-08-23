@@ -13,7 +13,6 @@ import * as jwt from 'jsonwebtoken';
 import { FyersAuthService } from '../fyers-auth/fyers-auth.service';
 import { TimescaleService, FyersCandle } from '../database/timescale.service';
 import { RedisService } from '../redis/redis.service';
-import { FyersDataService } from '../fyers-data/fyers-data.service';
 const fyersDataSocket = require('fyers-api-v3').fyersDataSocket;
 
 interface ActiveCandleState extends FyersCandle {
@@ -51,8 +50,7 @@ export class WsFyersGateway implements OnGatewayConnection, OnGatewayDisconnect,
   constructor(
     private readonly fyersAuthService: FyersAuthService,
     private readonly timescaleService: TimescaleService,
-    private readonly redisService: RedisService,
-    private readonly fyersDataService: FyersDataService
+    private readonly redisService: RedisService
   ) {}
 
   async onModuleInit() {

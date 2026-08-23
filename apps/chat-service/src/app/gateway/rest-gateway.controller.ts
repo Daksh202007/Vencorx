@@ -3,7 +3,6 @@ import type { Request, Response } from 'express';
 import { TimescaleService } from '../database/timescale.service';
 import { AngelOneFetchService } from '../angel-one/angel-one-fetch.service';
 import { RedisService } from '../redis/redis.service';
-import axios from 'axios';
 
 @Controller()
 export class RestGatewayController {
