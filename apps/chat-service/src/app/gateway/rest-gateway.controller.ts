@@ -57,11 +57,6 @@ export class RestGatewayController {
     try {
       // 1. This triggers Angel One Live feed + Async Background Throttled Angel Fetch
       const result = await this.angelOneFetchService.fetchHistoryAndAddStock(symbol, exchange);
-      
-      // 2. Trigger Fyers Async Background Throttled Fetch for 1m, 15m, 4h
-      // We don't await this so the admin dashboard doesn't freeze
-      axios.post('http://fyers_chart_service:3002/api/fyers/internal/fetch-all-history', { symbol })
-        .catch(e => this.logger.error(`Failed to trigger Fyers fetcher for ${symbol}: ${e.message}`));
 
       return result;
     } catch (err: any) {

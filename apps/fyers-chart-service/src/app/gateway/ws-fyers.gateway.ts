@@ -11,10 +11,14 @@ import { Server, Socket } from 'socket.io';
 import { Logger, OnModuleInit } from '@nestjs/common';
 import * as jwt from 'jsonwebtoken';
 import { FyersAuthService } from '../fyers-auth/fyers-auth.service';
-import { TimescaleService, FyersTick } from '../database/timescale.service';
+import { TimescaleService, FyersCandle } from '../database/timescale.service';
 import { RedisService } from '../redis/redis.service';
 import { FyersDataService } from '../fyers-data/fyers-data.service';
 const fyersDataSocket = require('fyers-api-v3').fyersDataSocket;
+
+interface ActiveCandleState extends FyersCandle {
+  lastVolTradedToday: number;
+}
 
 @WebSocketGateway({
   cors: {
@@ -25,9 +29,24 @@ const fyersDataSocket = require('fyers-api-v3').fyersDataSocket;
 export class WsFyersGateway implements OnGatewayConnection, OnGatewayDisconnect, OnModuleInit {
   private readonly logger = new Logger(WsFyersGateway.name);
   private fyersSocket: any = null;
+  private activeCandles = new Map<string, ActiveCandleState>();
 
   @WebSocketServer()
   server!: Server;
+
+  private getCandleStartTime(date: Date, resolutionMinutes: number): Date {
+    const d = new Date(date);
+    if (resolutionMinutes === 1) {
+      d.setSeconds(0, 0);
+    } else if (resolutionMinutes === 15) {
+      const mins = d.getMinutes();
+      d.setMinutes(mins - (mins % 15), 0, 0);
+    } else if (resolutionMinutes === 240) {
+      const h = d.getHours();
+      d.setHours(h - (h % 4), 0, 0, 0);
+    }
+    return d;
+  }
 
   constructor(
     private readonly fyersAuthService: FyersAuthService,
@@ -47,9 +66,6 @@ export class WsFyersGateway implements OnGatewayConnection, OnGatewayDisconnect,
           await this.ensureFyersSocketConnected();
 
           for (const stock of activeStocks) {
-            // Await fetching of missing historical data first
-            await this.fyersDataService.fetchThrottledHistory(stock);
-            
             if (this.fyersSocket && this.fyersSocket.isConnected()) {
               this.logger.log(`Subscribing ${stock} to Fyers live websocket...`);
               this.fyersSocket.subscribe([stock]);
@@ -105,25 +121,56 @@ export class WsFyersGateway implements OnGatewayConnection, OnGatewayDisconnect,
     });
 
     this.fyersSocket.on('message', async (message: any) => {
-      // Save to TimescaleDB, then emit
+      // Secretly aggregate ticks into 1m, 15m, 4h candles
       if (message && message.symbol) {
-        // Fyers timestamp is 10-digit epoch
         const timestamp = message.timestamp ? new Date(message.timestamp * 1000) : new Date();
-        
-        const tick: FyersTick = {
-          symbol: message.symbol,
-          timestamp,
-          ltp: message.ltp || 0,
-          open_price: message.open_price || message.ltp,
-          high_price: message.high_price || message.ltp,
-          low_price: message.low_price || message.ltp,
-          close_price: message.close_price || message.ltp,
-          volume: message.min_volume || message.vol_traded_today || 0,
-          raw_message: message
-        };
-        
-        await this.timescaleService.saveFyersTick(tick);
-        this.server.to(message.symbol).emit('fyers_chart_tick', message);
+        const resolutions = [1, 15, 240];
+        const ltp = message.ltp || 0;
+        const volTradedToday = message.vol_traded_today || 0;
+
+        for (const res of resolutions) {
+          const resStr = res.toString();
+          const candleStartTime = this.getCandleStartTime(timestamp, res);
+          const cacheKey = `${message.symbol}-${res}`;
+          let active = this.activeCandles.get(cacheKey);
+
+          // If no active candle, or the time boundary has crossed (new candle)
+          if (!active || active.timestamp.getTime() !== candleStartTime.getTime()) {
+            if (active) {
+              // Old candle closed! Final save to DB
+              await this.timescaleService.saveCandles([active]);
+            }
+            // Start new candle
+            active = {
+              symbol: message.symbol,
+              resolution: resStr,
+              timestamp: candleStartTime,
+              open: ltp,
+              high: ltp,
+              low: ltp,
+              close: ltp,
+              volume: 0,
+              lastVolTradedToday: volTradedToday
+            };
+          } else {
+            // Update active candle
+            active.high = Math.max(active.high, ltp);
+            active.low = Math.min(active.low, ltp);
+            active.close = ltp;
+            if (volTradedToday >= active.lastVolTradedToday) {
+              active.volume += (volTradedToday - active.lastVolTradedToday);
+              active.lastVolTradedToday = volTradedToday;
+            }
+          }
+
+          this.activeCandles.set(cacheKey, active);
+          
+          // Save to DB (Upsert) so we don't lose data on crash
+          await this.timescaleService.saveCandles([active]);
+          
+          // Emit interval-specific real-time updates to websocket clients
+          this.server.to(message.symbol).emit(`fyers_candle_update_${resStr}`, active);
+        }
       }
     });
 
