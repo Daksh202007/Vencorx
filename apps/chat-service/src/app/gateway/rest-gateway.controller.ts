@@ -30,6 +30,20 @@ export class RestGatewayController {
   }
 
   /**
+   * User Endpoint: Get all currently active/listed stocks
+   */
+  @Get('market-data/stocks')
+  async getActiveStocks() {
+    try {
+      const activeStocks = await this.redisService.getGlobalActiveStocks();
+      return { success: true, stocks: activeStocks };
+    } catch (err: any) {
+      this.logger.error(`Failed to fetch active stocks: ${err.message}`);
+      return { success: false, error: 'Failed to fetch active stocks', details: err.message };
+    }
+  }
+
+  /**
    * Admin Endpoint: Register a new stock (from NSE or BSE)
    * Fetches 2000 days of history at daily interval and registers it to the active live connection pool.
    */

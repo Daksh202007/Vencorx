@@ -17,6 +17,9 @@
     },
     {
       "path": "./apps/fyers-chart-service"
+    },
+    {
+      "path": "./apps/feature-service"
     }
   ]
 }

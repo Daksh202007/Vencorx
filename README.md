@@ -24,6 +24,7 @@ Acts as the main API Gateway. It routes all incoming traffic (`/api/auth`, `/api
 - **Purpose**: The central real-time hub. 
 - **Features**:
   - **WebSocket Gateway (`/socket.io/`)**: Manages thousands of simultaneous WebSocket connections from frontend clients.
+  - **REST Endpoints**: Provides endpoints for fetching active listed stocks (`GET /api/market-data/stocks`) and triggering background jobs.
   - **Angel One Integration (`AngelOneFetchService`)**: Connects directly to Angel One's live ticker WebSocket and processes real-time stock ticks.
   - **Throttled Historical Fetcher**: Pulls 5 years of daily historical data from Angel One in the background via strict chunking to avoid rate limits.
   - **Kafka Consumer**: Listens to Kafka topics (e.g., `fyers-chart-update-*`) and broadcasts real-time chart candles to subscribed users.

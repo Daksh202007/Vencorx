@@ -29,6 +29,7 @@ This document provides a short explanation for every API endpoint in the system.
 
 ## Chat & Gateway Service (Core Hub)
 - `GET /api/market-data/history`: Fetches historical `stock_ticks` (Angel One live feed history) for a given symbol from TimescaleDB.
+- `GET /api/market-data/stocks`: Fetches the list of all currently active and listed stocks from Redis (for both admin and users).
 - `POST /api/market-data/stocks`: The main endpoint triggered when a stock is added. Instantly returns success, subscribes to the Angel One WebSocket, and spins up background throttled fetchers for both Angel One and Fyers historical data.
 - `DELETE /api/market-data/stocks`: Unsubscribes a stock from the live feeds and cleans up background tasks.
 - `GET /api/`: Basic healthcheck for the NestJS chat-service.
