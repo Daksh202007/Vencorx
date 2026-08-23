@@ -82,6 +82,25 @@ services:
       - auth-service
     restart: always
 
+  # Monorepo Service 2B: NestJS Fyers Chart Service
+  fyers-chart-service:
+    build:
+      context: ../
+      dockerfile: Dockerfile
+    container_name: fyers_chart_service
+    command: node apps/fyers-chart-service/dist/main.js
+    env_file:
+      - ../.env
+    environment:
+      - NODE_ENV=production
+      - PORT=3002
+      - TIMESCALE_URL=postgresql://postgres:postgres@timescaledb:5432/timescaledb
+      - KAFKA_BROKERS=kafka:29092
+    depends_on:
+      - timescaledb
+      - kafka
+    restart: always
+
   # Monorepo Service 3: NextJS Admin Dashboard UI
   admin-feature:
     build:

@@ -1,0 +1,27 @@
+{
+  "name": "@ai-tradesignal/fyers-chart-service-e2e",
+  "version": "0.0.1",
+  "private": true,
+  "nx": {
+    "name": "fyers-chart-service-e2e",
+    "implicitDependencies": [
+      "fyers-chart-service"
+    ],
+    "targets": {
+      "e2e": {
+        "executor": "@nx/jest:jest",
+        "outputs": [
+          "{projectRoot}/test-output/jest/coverage"
+        ],
+        "options": {
+          "jestConfig": "apps/fyers-chart-service-e2e/jest.config.cts",
+          "passWithNoTests": true
+        },
+        "dependsOn": [
+          "fyers-chart-service:build",
+          "fyers-chart-service:serve"
+        ]
+      }
+    }
+  }
+}

@@ -52,7 +52,11 @@
       "plugin": "@nx/jest/plugin",
       "options": {
         "targetName": "test"
-      }
+      },
+      "exclude": [
+        "apps/chart-service-e2e/**/*",
+        "apps/fyers-chart-service-e2e/**/*"
+      ]
     },
     {
       "plugin": "@nx/webpack/plugin",

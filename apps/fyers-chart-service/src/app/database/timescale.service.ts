@@ -1,0 +1,142 @@
+import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from '@nestjs/common';
+import { Pool } from 'pg';
+
+export interface FyersCandle {
+  symbol: string;
+  resolution: string; // '1', '15', '240', etc.
+  timestamp: Date;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+@Injectable()
+export class TimescaleService implements OnModuleInit, OnModuleDestroy {
+  private readonly logger = new Logger(TimescaleService.name);
+  private pool: Pool | null = null;
+  public isConnected = false;
+  
+  async onModuleInit() {
+    const connectionString = process.env.TIMESCALE_URL || process.env.DATABASE_URL;
+    
+    if (connectionString && (connectionString.startsWith('postgres://') || connectionString.startsWith('postgresql://'))) {
+      this.logger.log(`Connecting to TimescaleDB/PostgreSQL at ${connectionString.split('@')[1] || connectionString}`);
+      this.pool = new Pool({ connectionString });
+      
+      try {
+        await this.pool.query('SELECT NOW()');
+        this.isConnected = true;
+        this.logger.log('TimescaleDB connection verified successfully.');
+        await this.initializeTables();
+      } catch (err: any) {
+        this.logger.warn(`Could not connect to TimescaleDB: ${err.message}.`);
+        this.isConnected = false;
+      }
+    } else {
+      this.logger.warn('No PostgreSQL/TimescaleDB connection URL provided.');
+    }
+  }
+
+  async onModuleDestroy() {
+    if (this.pool) {
+      await this.pool.end();
+      this.logger.log('TimescaleDB pool closed.');
+    }
+  }
+
+  private async initializeTables() {
+    if (!this.pool || !this.isConnected) return;
+
+    try {
+      await this.pool.query(`
+        CREATE TABLE IF NOT EXISTS fyers_candles (
+          symbol VARCHAR(50) NOT NULL,
+          resolution VARCHAR(10) NOT NULL,
+          open_price NUMERIC NOT NULL,
+          high_price NUMERIC NOT NULL,
+          low_price NUMERIC NOT NULL,
+          close_price NUMERIC NOT NULL,
+          volume BIGINT NOT NULL,
+          timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
+          PRIMARY KEY (symbol, resolution, timestamp)
+        );
+      `);
+
+      try {
+        await this.pool.query(`
+          SELECT create_hypertable('fyers_candles', 'timestamp', if_not_exists => TRUE);
+        `);
+        this.logger.log('TimescaleDB hypertable successfully verified/created for fyers_candles.');
+      } catch (e: any) {
+        this.logger.log('TimescaleDB extension not active/installed. Running on standard PostgreSQL table.');
+      }
+      
+      this.logger.log('Database tables successfully initialized.');
+    } catch (err: any) {
+      this.logger.error(`Failed to initialize database tables: ${err.message}`);
+    }
+  }
+
+  async saveCandles(candles: FyersCandle[]): Promise<void> {
+    if (!this.pool || !this.isConnected || candles.length === 0) return;
+
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      for (const candle of candles) {
+        await client.query(
+          `INSERT INTO fyers_candles (
+            symbol, resolution, open_price, high_price, low_price, close_price, volume, timestamp
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+          ON CONFLICT (symbol, resolution, timestamp) DO UPDATE SET
+            open_price = EXCLUDED.open_price,
+            high_price = EXCLUDED.high_price,
+            low_price = EXCLUDED.low_price,
+            close_price = EXCLUDED.close_price,
+            volume = EXCLUDED.volume`,
+          [
+            candle.symbol, candle.resolution, candle.open, candle.high,
+            candle.low, candle.close, candle.volume, candle.timestamp
+          ]
+        );
+      }
+      await client.query('COMMIT');
+    } catch (err: any) {
+      await client.query('ROLLBACK');
+      this.logger.error(`Database write failed for fyers candles: ${err.message}`);
+    } finally {
+      client.release();
+    }
+  }
+
+  async getHistoricalCandles(symbol: string, resolution: string, from: Date, to: Date): Promise<FyersCandle[]> {
+    if (!this.pool || !this.isConnected) return [];
+
+    try {
+      const result = await this.pool.query(
+        `SELECT 
+          symbol, resolution, open_price as "open", high_price as "high",
+          low_price as "low", close_price as "close", volume, timestamp
+        FROM fyers_candles 
+        WHERE symbol = $1 AND resolution = $2 AND timestamp >= $3 AND timestamp <= $4
+        ORDER BY timestamp ASC`,
+        [symbol, resolution, from, to]
+      );
+      
+      return result.rows.map(row => ({
+        ...row,
+        open: parseFloat(row.open),
+        high: parseFloat(row.high),
+        low: parseFloat(row.low),
+        close: parseFloat(row.close),
+        volume: parseInt(row.volume, 10),
+        timestamp: new Date(row.timestamp)
+      }));
+    } catch (err: any) {
+      this.logger.error(`Database read failed for historical candles: ${err.message}`);
+      return [];
+    }
+  }
+}

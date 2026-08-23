@@ -11,6 +11,12 @@
     },
     {
       "path": "./apps/admin-feature"
+    },
+    {
+      "path": "./apps/fyers-chart-service-e2e"
+    },
+    {
+      "path": "./apps/fyers-chart-service"
     }
   ]
 }
