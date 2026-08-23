@@ -105,17 +105,26 @@ export class FyersDataService {
    * Fetches in 90-day chunks and sleeps between requests to avoid rate limits
    */
   async fetchThrottledHistory(symbol: string) {
-    this.logger.log(`Starting background throttled fetch for ${symbol} (1 year data)...`);
+    this.logger.log(`Starting background throttled fetch for ${symbol}...`);
     
     const now = new Date();
-    const oneYearAgo = new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000);
     
     const resolutions = ['1', '15', '240'];
     const chunkDays = 90; // 90 days max per request
     const chunkMs = chunkDays * 24 * 60 * 60 * 1000;
     
     for (const res of resolutions) {
-      let currentFrom = oneYearAgo.getTime();
+      let currentFrom: number;
+      const lastDate = await this.timescaleService.getLatestFyersCandleDate(symbol, res);
+      
+      if (lastDate) {
+        currentFrom = lastDate.getTime();
+        this.logger.log(`Found existing ${res}m data for ${symbol} up to ${lastDate.toISOString()}. Fetching missing days...`);
+      } else {
+        currentFrom = now.getTime() - 365 * 24 * 60 * 60 * 1000;
+        this.logger.log(`No existing ${res}m data for ${symbol}. Fetching full 1 year...`);
+      }
+
       const endTime = now.getTime();
       
       while (currentFrom < endTime) {

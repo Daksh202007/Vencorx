@@ -8,9 +8,12 @@ import {
   ConnectedSocket,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
-import { Logger } from '@nestjs/common';
+import { Logger, OnModuleInit } from '@nestjs/common';
 import * as jwt from 'jsonwebtoken';
 import { FyersAuthService } from '../fyers-auth/fyers-auth.service';
+import { TimescaleService, FyersTick } from '../database/timescale.service';
+import { RedisService } from '../redis/redis.service';
+import { FyersDataService } from '../fyers-data/fyers-data.service';
 const fyersDataSocket = require('fyers-api-v3').fyersDataSocket;
 
 @WebSocketGateway({
@@ -19,14 +22,46 @@ const fyersDataSocket = require('fyers-api-v3').fyersDataSocket;
   },
   path: '/socket.io-fyers/',
 })
-export class WsFyersGateway implements OnGatewayConnection, OnGatewayDisconnect {
+export class WsFyersGateway implements OnGatewayConnection, OnGatewayDisconnect, OnModuleInit {
   private readonly logger = new Logger(WsFyersGateway.name);
   private fyersSocket: any = null;
 
   @WebSocketServer()
   server!: Server;
 
-  constructor(private readonly fyersAuthService: FyersAuthService) {}
+  constructor(
+    private readonly fyersAuthService: FyersAuthService,
+    private readonly timescaleService: TimescaleService,
+    private readonly redisService: RedisService,
+    private readonly fyersDataService: FyersDataService
+  ) {}
+
+  async onModuleInit() {
+    try {
+      // Delay initialization slightly to allow DB/Redis connections to establish
+      setTimeout(async () => {
+        const activeStocks = await this.redisService.getGlobalActiveStocks();
+        if (activeStocks && activeStocks.length > 0) {
+          this.logger.log(`Fyers Boot Sequence: Restoring subscriptions for ${activeStocks.length} active stocks...`);
+          
+          await this.ensureFyersSocketConnected();
+
+          for (const stock of activeStocks) {
+            // Await fetching of missing historical data first
+            await this.fyersDataService.fetchThrottledHistory(stock);
+            
+            if (this.fyersSocket && this.fyersSocket.isConnected()) {
+              this.logger.log(`Subscribing ${stock} to Fyers live websocket...`);
+              this.fyersSocket.subscribe([stock]);
+            }
+          }
+          this.logger.log('Fyers Boot Sequence Completed.');
+        }
+      }, 5000);
+    } catch (e: any) {
+      this.logger.error(`Failed to initialize Fyers Boot Sequence: ${e.message}`);
+    }
+  }
 
   async handleConnection(client: Socket) {
     try {
@@ -69,9 +104,25 @@ export class WsFyersGateway implements OnGatewayConnection, OnGatewayDisconnect 
       this.fyersSocket.mode(this.fyersSocket.FullMode); // Full mode for detailed candle data
     });
 
-    this.fyersSocket.on('message', (message: any) => {
-      // Emit the real-time data to all subscribed clients
+    this.fyersSocket.on('message', async (message: any) => {
+      // Save to TimescaleDB, then emit
       if (message && message.symbol) {
+        // Fyers timestamp is 10-digit epoch
+        const timestamp = message.timestamp ? new Date(message.timestamp * 1000) : new Date();
+        
+        const tick: FyersTick = {
+          symbol: message.symbol,
+          timestamp,
+          ltp: message.ltp || 0,
+          open_price: message.open_price || message.ltp,
+          high_price: message.high_price || message.ltp,
+          low_price: message.low_price || message.ltp,
+          close_price: message.close_price || message.ltp,
+          volume: message.min_volume || message.vol_traded_today || 0,
+          raw_message: message
+        };
+        
+        await this.timescaleService.saveFyersTick(tick);
         this.server.to(message.symbol).emit('fyers_chart_tick', message);
       }
     });

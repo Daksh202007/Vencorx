@@ -12,6 +12,18 @@ export interface FyersCandle {
   volume: number;
 }
 
+export interface FyersTick {
+  symbol: string;
+  timestamp: Date;
+  ltp: number;
+  open_price: number;
+  high_price: number;
+  low_price: number;
+  close_price: number;
+  volume: number;
+  raw_message?: any;
+}
+
 @Injectable()
 export class TimescaleService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(TimescaleService.name);
@@ -72,6 +84,32 @@ export class TimescaleService implements OnModuleInit, OnModuleDestroy {
       } catch (e: any) {
         this.logger.log('TimescaleDB extension not active/installed. Running on standard PostgreSQL table.');
       }
+
+      // Create fyers_ticks table for live websocket data
+      await this.pool.query(`
+        CREATE TABLE IF NOT EXISTS fyers_ticks (
+          symbol VARCHAR(50) NOT NULL,
+          timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
+          ltp NUMERIC NOT NULL,
+          open_price NUMERIC,
+          high_price NUMERIC,
+          low_price NUMERIC,
+          close_price NUMERIC,
+          volume BIGINT,
+          raw_message JSONB,
+          PRIMARY KEY (symbol, timestamp)
+        );
+      `);
+
+      // Try turning it into a hypertable
+      try {
+        await this.pool.query(`
+          SELECT create_hypertable('fyers_ticks', 'timestamp', if_not_exists => TRUE);
+        `);
+        this.logger.log('TimescaleDB hypertable successfully verified/created for fyers_ticks.');
+      } catch (e: any) {
+        // Ignored, might be standard PG
+      }
       
       this.logger.log('Database tables successfully initialized.');
     } catch (err: any) {
@@ -111,6 +149,25 @@ export class TimescaleService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  async saveFyersTick(tick: FyersTick): Promise<void> {
+    if (!this.pool || !this.isConnected) return;
+
+    try {
+      await this.pool.query(
+        `INSERT INTO fyers_ticks (
+          symbol, timestamp, ltp, open_price, high_price, low_price, close_price, volume, raw_message
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        ON CONFLICT (symbol, timestamp) DO NOTHING`,
+        [
+          tick.symbol, tick.timestamp, tick.ltp, tick.open_price,
+          tick.high_price, tick.low_price, tick.close_price, tick.volume, tick.raw_message
+        ]
+      );
+    } catch (err: any) {
+      this.logger.error(`Failed to save Fyers tick for ${tick.symbol}: ${err.message}`);
+    }
+  }
+
   async getHistoricalCandles(symbol: string, resolution: string, from: Date, to: Date): Promise<FyersCandle[]> {
     if (!this.pool || !this.isConnected) return [];
 
@@ -137,6 +194,32 @@ export class TimescaleService implements OnModuleInit, OnModuleDestroy {
     } catch (err: any) {
       this.logger.error(`Database read failed for historical candles: ${err.message}`);
       return [];
+    }
+  }
+
+  /**
+   * Get the latest timestamp for Fyers candles for a specific symbol and resolution
+   */
+  async getLatestFyersCandleDate(symbol: string, resolution: string): Promise<Date | null> {
+    if (!this.pool || !this.isConnected) return null;
+
+    try {
+      const result = await this.pool.query(
+        `SELECT timestamp 
+         FROM fyers_candles 
+         WHERE symbol = $1 AND resolution = $2
+         ORDER BY timestamp DESC 
+         LIMIT 1`,
+        [symbol, resolution]
+      );
+      
+      if (result.rows.length > 0) {
+        return new Date(result.rows[0].timestamp);
+      }
+      return null;
+    } catch (err: any) {
+      this.logger.error(`Failed to fetch latest fyers candle date for ${symbol} (${resolution}): ${err.message}`);
+      return null;
     }
   }
 }

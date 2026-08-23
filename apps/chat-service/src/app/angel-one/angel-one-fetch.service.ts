@@ -42,7 +42,13 @@ export class AngelOneFetchService implements OnModuleInit, OnModuleDestroy {
       const activeStocks = await this.redisService.getGlobalActiveStocks();
       this.logger.log(`Restoring subscriptions for ${activeStocks.length} stocks from Redis...`);
       for (const stock of activeStocks) {
-        this.subscribeStock(stock);
+        const token = await this.timescaleService.getTokenForSymbol(stock);
+        if (token) {
+          await this.fetchThrottledAngelHistory(stock, 'NSE', token);
+          await this.subscribeStock(stock);
+        } else {
+          this.logger.warn(`Could not find token for ${stock} in DB during boot.`);
+        }
       }
     } catch (e: any) {
       this.logger.error(`Failed to initialize Angel One service: ${e.message}`);
@@ -363,13 +369,24 @@ export class AngelOneFetchService implements OnModuleInit, OnModuleDestroy {
   async fetchThrottledAngelHistory(symbol: string, exchange: string, token: string) {
     if (!this.smartApi) return;
     
-    this.logger.log(`Starting background throttled fetch for Angel One ${symbol} (5 years daily data)...`);
+    this.logger.log(`Starting background throttled fetch for Angel One ${symbol}...`);
     
     const now = new Date();
-    // 5 years ago
-    const fiveYearsAgo = new Date(now.getTime() - 5 * 365 * 24 * 60 * 60 * 1000);
+    let currentFrom: number;
     
-    let currentFrom = fiveYearsAgo.getTime();
+    // Check if we have data already
+    const lastDate = await this.timescaleService.getLatestAngelCandleDate(symbol);
+    
+    if (lastDate) {
+      // Start from the last saved date
+      currentFrom = lastDate.getTime();
+      this.logger.log(`Found existing data for ${symbol} up to ${lastDate.toISOString()}. Fetching missing days...`);
+    } else {
+      // 5 years ago
+      currentFrom = now.getTime() - 5 * 365 * 24 * 60 * 60 * 1000;
+      this.logger.log(`No existing data for ${symbol}. Fetching full 5 years...`);
+    }
+    
     const endTime = now.getTime();
     
     // Chunk by 365 days

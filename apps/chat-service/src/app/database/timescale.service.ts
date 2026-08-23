@@ -455,6 +455,32 @@ export class TimescaleService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
+   * Get the latest timestamp for Angel One candles for a specific symbol
+   */
+  async getLatestAngelCandleDate(symbol: string): Promise<Date | null> {
+    if (!this.pool || !this.isConnected) return null;
+
+    try {
+      const result = await this.pool.query(
+        `SELECT timestamp 
+         FROM angel_candles 
+         WHERE symbol = $1 AND resolution = 'ONE_DAY'
+         ORDER BY timestamp DESC 
+         LIMIT 1`,
+        [symbol]
+      );
+      
+      if (result.rows.length > 0) {
+        return new Date(result.rows[0].timestamp);
+      }
+      return null;
+    } catch (err: any) {
+      this.logger.error(`Failed to fetch latest angel candle date for ${symbol}: ${err.message}`);
+      return null;
+    }
+  }
+
+  /**
    * Bulk UPSERT Scrip Master tokens into PostgreSQL
    */
   async bulkUpsertScripMaster(tokens: { symbol: string; token: string }[]): Promise<void> {
