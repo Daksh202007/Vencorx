@@ -1,131 +1,50 @@
-# AiTradesignal Monorepo
+# Vencorx Backend Architecture
 
-Welcome to the **AiTradesignal** monorepo! This project is built using [Nx](https://nx.dev) as a Smart Monorepo and uses a microservice-based architecture to power stock trading signal ingestion, real-time analytics, and user authentication.
+This repository contains the complete backend microservices architecture for the Vencorx platform. It is a highly scalable, multi-service backend built using NestJS, Next.js API Routes, PostgreSQL (TimescaleDB), Redis, and Apache Kafka.
 
----
+## System Architecture
 
-## 🏗️ Architecture Overview
+The platform uses an Nginx reverse proxy to route traffic to the appropriate microservices. The backend is split into multiple independent services:
 
-The system consists of the following primary components:
-1. **Frontend / Admin UI (`admin-feature`)**: A Next.js dashboard application allowing administrators to register and manage stock lists and monitor streaming ticks.
-2. **Authentication Service (`auth-service`)**: A Next.js REST API microservice managing User and Admin registrations, registration approvals, and secure 2FA/OTP login flows.
-3. **Gateway & Chat Service (`chat-service`)**: A NestJS microservice coordinating historical tick fetching from TimescaleDB, Redis caching, Kafka message broker, and serving Socket.io connections for real-time stock stream pushes.
-4. **Data Infrastructure**:
-   - **TimescaleDB (PostgreSQL)**: Stores historical stock tick log records.
-   - **Apache Kafka / Zookeeper**: Manages real-time data streaming queues.
-   - **Upstash Redis**: Tracks active websocket subscriber counts and maps connections.
-   - **MongoDB (Atlas)**: Keeps persistent user and administrator credentials.
+### 1. Nginx Reverse Proxy (`deployment/nginx/default.conf`)
+Acts as the main API Gateway. It routes all incoming traffic (`/api/auth`, `/api/admin`, `/api/fyers`, `/socket.io`) to their respective Docker containers.
 
----
+### 2. Auth Service (`apps/auth-service`)
+- **Technology**: Next.js App Router (API Routes)
+- **Purpose**: Handles all authentication (Registration, Login, OTP Verification, Password Resets) for both Users and Admins.
+- **Database**: Connects to the primary PostgreSQL database using Prisma ORM.
 
-## 📂 Project Structure
+### 3. Admin Feature Service (`apps/admin-feature`)
+- **Technology**: Next.js App Router (API Routes)
+- **Purpose**: Exposes administrative endpoints for managing the platform (e.g., adding/removing active stocks, clearing historical data).
+- **Communication**: Interacts with PostgreSQL via Prisma and sends commands to other microservices.
 
-```
-ai-tradesignal/
-├── apps/
-│   ├── admin-feature/      # Next.js admin dashboard frontend
-│   ├── auth-service/       # Next.js auth REST API service
-│   └── chat-service/       # NestJS backend gateway & websockets
-├── libs/
-│   └── error-handling/     # Shared error handling middlewares
-├── prisma/
-│   └── schema.prisma       # Prisma DB models for MongoDB (User & Admin)
-├── deployment/             # Containerized production/staging deployment
-│   ├── cloudflared/        # Cloudflare tunnel ingress & credentials
-│   ├── nginx/              # Nginx SSL-terminating reverse proxy configuration
-│   └── docker-compose.yml  # Unified Docker compose execution script
-└── Dockerfile              # Monorepo multi-stage Docker builder configuration
-```
+### 4. Chat & Gateway Service (`apps/chat-service`)
+- **Technology**: NestJS, Socket.io
+- **Purpose**: The central real-time hub. 
+- **Features**:
+  - **WebSocket Gateway (`/socket.io/`)**: Manages thousands of simultaneous WebSocket connections from frontend clients.
+  - **Angel One Integration (`AngelOneFetchService`)**: Connects directly to Angel One's live ticker WebSocket and processes real-time stock ticks.
+  - **Throttled Historical Fetcher**: Pulls 5 years of daily historical data from Angel One in the background via strict chunking to avoid rate limits.
+  - **Kafka Consumer**: Listens to Kafka topics (e.g., `fyers-chart-update-*`) and broadcasts real-time chart candles to subscribed users.
 
----
+### 5. Fyers Chart Service (`apps/fyers-chart-service`)
+- **Technology**: NestJS
+- **Purpose**: Dedicated microservice for handling all Fyers API integrations.
+- **Features**:
+  - **OAuth 2.0 Auth Flow (`FyersAuthService`)**: Automatically manages Access and Refresh tokens using a daily Cron Job.
+  - **Historical Data Engine (`FyersDataService`)**: Pulls 1m, 15m, and 4h historical data in large chunks.
+  - **Throttled Fetching**: Intelligently chunks data (e.g., 90-day intervals) and sleeps between requests to protect the server's 2 vCPU / 8GB RAM limitations.
+  - **Kafka Producer**: Publishes processed OHLCV candle updates to Kafka topics so the `chat-service` can stream them to the frontend.
 
-## 💻 Development Guide
+### 6. Core Infrastructure (Docker)
+- **PostgreSQL / TimescaleDB**: The primary database. TimescaleDB hypertables (`stock_ticks`, `fyers_candles`, `angel_candles`) are used for blazing fast time-series queries.
+- **Redis**: Used for high-speed caching, storing Fyers API tokens, and maintaining active WebSocket session maps.
+- **Kafka / Zookeeper**: The event bus for real-time inter-service communication (e.g., sending chart updates from `fyers-chart-service` to `chat-service`).
 
-To run apps in development mode on your host machine:
-
-### 1. Install Dependencies
-```sh
-npm install
-```
-
-### 2. Generate Prisma Client
-```sh
-npx prisma generate
-```
-
-### 3. Run Services Individually
-```sh
-# Start the Auth Service (Next.js)
-npx nx dev auth-service
-
-# Start the Gateway & Chat Service (NestJS)
-npx nx dev chat-service
-
-# Start the Admin Dashboard (Next.js)
-npx nx dev admin-feature
-```
-
----
-
-## 🚀 Docker Deployment Guide
-
-The `deployment` folder contains all the files needed to compile and orchestrate the complete stack inside Docker, securing internal and external endpoints using HTTPS.
-
-### 🛡️ Secure Ingress Flow
-```
-Client --[HTTPS]--> Cloudflare Edge --[Outbound Tunnel]--> Cloudflared Container --[HTTPS]--> Nginx Container --[HTTP]--> Microservices (Docker network)
-```
-
-### Setup & Run Instructions
-
-#### 1. Configure Cloudflared Credentials
-Open [`deployment/cloudflared/817d64a4-b9ed-425e-90ca-4f27901397e3.json`](file:///c:/Users/daksh/OneDrive/Desktop/trading_guy/ai-tradesignal/deployment/cloudflared/817d64a4-b9ed-425e-90ca-4f27901397e3.json) and replace placeholder variables with your active Cloudflare tunnel credentials:
-```json
-{
-  "AccountTag": "your-cloudflare-account-tag",
-  "TunnelSecret": "your-tunnel-secret",
-  "TunnelID": "817d64a4-b9ed-425e-90ca-4f27901397e3"
-}
-```
-
-#### 2. Run the Stack
-Navigate to the deployment directory and launch:
-```powershell
-cd deployment
-docker compose up --build -d
-```
-On the initial launch:
-* A helper `cert-generator` container starts automatically, generates self-signed SSL certificates for `digitaldigimart.shop` inside `./nginx/certs/`, and exits.
-* Nginx boots up terminating SSL on port `443` using the generated certificates.
-* NextJS and NestJS apps compile and start.
-* TimescaleDB, PgAdmin, Kafka, and Zookeeper spin up.
-* Cloudflared connects to Cloudflare Edge, routing inbound traffic from `digitaldigimart.shop` securely.
-
-#### 3. View Containers & Logs
-To verify that everything is running:
-```powershell
-docker compose ps
-docker compose logs -f
-```
-To stop the stack:
-```powershell
-docker compose down
-```
-
----
-
-## 🤖 Automated CI/CD Deployment
-
-We have configured a GitHub Actions workflow in [`.github/workflows/deploy.yml`](file:///.github/workflows/deploy.yml) that triggers automatically on every push to the `master` or `main` branches.
-
-### Setup Instructions:
-1. **Add GitHub Secret**: Go to your GitHub repository $\rightarrow$ Settings $\rightarrow$ Secrets and variables $\rightarrow$ Actions $\rightarrow$ New repository secret, and add:
-   - Name: `VPS_SSH_KEY`
-   - Value: Paste the contents of your private SSH key used to connect to the VPS.
-2. **First-time VPS Setup**:
-   Connect to your VPS manually once and create the `.env` configuration file in the target directory:
-   ```bash
-   mkdir -p /root/ai-tradesignal
-   nano /root/ai-tradesignal/.env
-   ```
-   Paste all your production environment configurations (MongoDB connections, credentials, JWT keys, etc.) here. This file is ignored by Git and will remain persistent across automated deploys.
+## Data Flow (Adding a Stock)
+1. **Admin** hits `POST /api/admin/stocks` (or `POST /api/market-data/stocks`).
+2. The endpoint instantly returns `Success` to the frontend so it doesn't freeze.
+3. In the background, `chat-service` starts downloading 5 years of Angel One data in chunks.
+4. Concurrently, an HTTP call is made to `fyers-chart-service` to start downloading 1 year of intraday data (1m, 15m, 4h).
+5. The downloaded data is safely written into TimescaleDB without overloading the server.

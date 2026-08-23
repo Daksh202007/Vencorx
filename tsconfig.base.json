@@ -16,7 +16,7 @@
     "skipLibCheck": true,
     "strict": true,
     "target": "es2022",
-    "customConditions": ["@ai-tradesignal/source"],
+    "customConditions": ["@vencorx/source"],
     "paths": {
       "@errHandling-index": ["./libs/error-handling/src/lib/index.ts"],
       "@errorHandling-middleware": ["./libs/error-handling/src/lib/error-middleware.ts"]

@@ -1,5 +1,5 @@
 {
-  "name": "@ai-tradesignal/chat-service",
+  "name": "@vencorx/chat-service",
   "version": "0.0.1",
   "private": true,
   "nx": {

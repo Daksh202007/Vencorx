@@ -1,5 +1,5 @@
 {
-  "name": "@ai-tradesignal/auth-service",
+  "name": "@vencorx/auth-service",
   "version": "0.0.1",
   "private": true,
   "dependencies": {
