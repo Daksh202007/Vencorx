@@ -1,7 +1,7 @@
 import { Controller, Post, Body, HttpException, HttpStatus } from '@nestjs/common';
 import { FyersDataService } from './fyers-data/fyers-data.service';
 
-@Controller('api/fyers/internal')
+@Controller('fyers/internal')
 export class FyersInternalController {
   constructor(private readonly fyersDataService: FyersDataService) {}
 

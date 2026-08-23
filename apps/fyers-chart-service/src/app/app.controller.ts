@@ -1,9 +1,7 @@
 import { Controller, Get, Query, HttpException, HttpStatus, Res } from '@nestjs/common';
 import { FyersDataService } from './fyers-data/fyers-data.service';
 import { FyersAuthService } from './fyers-auth/fyers-auth.service';
-import { Response } from 'express';
-
-@Controller('api/fyers')
+@Controller('fyers')
 export class AppController {
   constructor(
     private readonly fyersDataService: FyersDataService,
@@ -11,7 +9,7 @@ export class AppController {
   ) {}
 
   @Get('callback')
-  async handleCallback(@Query('auth_code') authCode: string, @Query('s') status: string, @Query('message') message: string, @Res() res: Response) {
+  async handleCallback(@Query('auth_code') authCode: string, @Query('s') status: string, @Query('message') message: string, @Res() res: any) {
     if (status === 'error') {
       return res.status(HttpStatus.BAD_REQUEST).send(`Fyers Auth Error: ${message}`);
     }
