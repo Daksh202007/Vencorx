@@ -317,6 +317,28 @@ _(Internal equivalent to `/api/admin/stocks`)_
 
 ```json
 {
-  "symbol": "RELIANCE-EQ"
+}
+```
+
+### Access Token Refresh (Admin & User)
+
+#### `POST /api/auth/admin/new-access-token`
+#### `POST /api/auth/user/new-access-token`
+
+**Request (for both):**
+
+```json
+{
+  "refreshToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+}
+```
+
+**Response (for both):**
+
+```json
+{
+  "success": true,
+  "accessToken": "eyJhbGciOiJIUzI1NiIsInR5c...",
+  "refreshToken": "eyJhbGciOiJIUzI1NiIsInR5c..."
 }
 ```

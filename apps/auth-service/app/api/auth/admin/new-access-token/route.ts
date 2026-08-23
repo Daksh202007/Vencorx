@@ -13,9 +13,9 @@ const newAccessTokenHandler = async (req: Request) => {
 
   const decoded = verifyToken(refreshToken);
 
-  // Enforce User Role
-  if (decoded.role !== 'USER') {
-    throw new AppError('Invalid token role for user refresh', 403);
+  // Enforce Admin Role
+  if (decoded.role !== 'ADMIN' && decoded.role !== 'SUPER_ADMIN') {
+    throw new AppError('Invalid token role for admin refresh', 403);
   }
 
   const newAccessToken = signToken({ id: decoded.id, role: decoded.role }, '15m');

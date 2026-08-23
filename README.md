@@ -3,6 +3,16 @@
 (any api request you want send please send this request this domain name)
 https://vencorx.digitaldigimart.shop
 
+want to check api you want to install postman to check all api
+
+this user collection api
+https://www.postman.com/dakshsuvarna46-3623851/workspace/yt-auth/collection/53078795-90d64444-34fb-4480-ab45-0d9dd29efdee?action=share&source=copy-link&creator=53078795
+
+this admin collection api
+https://www.postman.com/dakshsuvarna46-3623851/workspace/yt-auth/collection/53078795-fc6aeb21-1de6-4e34-a3a1-3ede73528f53?action=share&source=copy-link&creator=53078795
+
+chat server api test this (not comfirm in live market work or cursh code 500 get)
+
 (notice when you want to see the api endpoint please check following files)
 
 - doc.md

@@ -11,6 +11,7 @@ This document provides a short explanation for every API endpoint in the system.
 - `POST /api/auth/admin/forgot-password`: Triggers a password reset email/OTP for admins.
 - `POST /api/auth/admin/verify-forgot-password-admin`: Verifies the OTP for admin password reset.
 - `POST /api/auth/admin/reset-password`: Sets a new password for the admin account.
+- `POST /api/auth/admin/new-access-token`: Refreshes the access token using a valid refresh token.
 
 **User Flow:**
 - `POST /api/auth/user/registration`: Registers a new standard user and sends an OTP.
@@ -20,6 +21,7 @@ This document provides a short explanation for every API endpoint in the system.
 - `POST /api/auth/user/forgot-password`: Triggers password reset for standard users.
 - `POST /api/auth/user/verify-forgot-password-user`: Verifies the reset OTP.
 - `POST /api/auth/user/reset-password`: Sets a new password for the user.
+- `POST /api/auth/user/new-access-token`: Refreshes the access token using a valid refresh token.
 
 ## Admin Feature Service
 - `GET /api/hello`: A simple healthcheck endpoint for the Next.js API.
