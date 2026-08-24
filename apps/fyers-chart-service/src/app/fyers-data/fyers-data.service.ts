@@ -84,20 +84,47 @@ export class FyersDataService {
    * Get history from DB, fallback to fetching from Fyers if not found
    */
   async getHistory(symbol: string, resolution: string, from: Date, to: Date): Promise<FyersCandle[]> {
-    // First, check TimescaleDB
-    const dbCandles = await this.timescaleService.getHistoricalCandles(symbol, resolution, from, to);
+    let dbCandles = await this.timescaleService.getHistoricalCandles(symbol, resolution, from, to);
     
+    let needsFetch = false;
+
+    if (!dbCandles || dbCandles.length === 0) {
+      needsFetch = true;
+    } else {
+      // Check if we are missing recent data (gap detection)
+      const lastCandleTime = dbCandles[dbCandles.length - 1].timestamp.getTime();
+      const expectedEnd = Math.min(to.getTime(), Date.now());
+      
+      // If the last candle in DB is more than 60 minutes older than the requested end time (or 'now'),
+      // it means there might be a gap (e.g. server was off, or it's just incomplete).
+      // We will fetch from Fyers to ensure the chart is fully up-to-date.
+      if (expectedEnd - lastCandleTime > 60 * 60 * 1000) {
+        this.logger.log(`Potential data gap detected for ${symbol}. Last candle: ${new Date(lastCandleTime).toISOString()}. Fetching fresh data...`);
+        needsFetch = true;
+      }
+    }
+
+    if (needsFetch) {
+      this.logger.log(`Fetching history from Fyers API for ${symbol}...`);
+      const fromStr = Math.floor(from.getTime() / 1000).toString();
+      const toStr = Math.floor(to.getTime() / 1000).toString();
+      
+      try {
+        await this.fetchAndSaveHistory(symbol, resolution, fromStr, toStr);
+        // Re-query the DB to get the complete, newly merged dataset
+        dbCandles = await this.timescaleService.getHistoricalCandles(symbol, resolution, from, to);
+      } catch (err: any) {
+        this.logger.error(`Failed to fetch fresh history from Fyers: ${err.message}`);
+        // If Fyers fails, we just fall through and return whatever we had in the DB
+      }
+    }
+
     if (dbCandles && dbCandles.length > 0) {
       this.logger.log(`Served ${dbCandles.length} candles for ${symbol} from TimescaleDB.`);
       return dbCandles;
     }
 
-    // If no data in DB, fetch from Fyers
-    this.logger.log(`No data found in TimescaleDB for ${symbol}. Fetching from Fyers API...`);
-    const fromStr = Math.floor(from.getTime() / 1000).toString();
-    const toStr = Math.floor(to.getTime() / 1000).toString();
-    
-    return await this.fetchAndSaveHistory(symbol, resolution, fromStr, toStr);
+    return [];
   }
 
   /**

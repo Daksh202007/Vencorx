@@ -57,20 +57,8 @@ export class WsFyersGateway implements OnGatewayConnection, OnGatewayDisconnect,
     try {
       // Delay initialization slightly to allow DB/Redis connections to establish
       setTimeout(async () => {
-        const activeStocks = await this.redisService.getGlobalActiveStocks();
-        if (activeStocks && activeStocks.length > 0) {
-          this.logger.log(`Fyers Boot Sequence: Restoring subscriptions for ${activeStocks.length} active stocks...`);
-          
-          await this.ensureFyersSocketConnected();
-
-          for (const stock of activeStocks) {
-            if (this.fyersSocket && this.fyersSocket.isConnected()) {
-              this.logger.log(`Subscribing ${stock} to Fyers live websocket...`);
-              this.fyersSocket.subscribe([stock]);
-            }
-          }
-          this.logger.log('Fyers Boot Sequence Completed.');
-        }
+        this.logger.log(`Fyers Boot Sequence: Starting connection...`);
+        await this.ensureFyersSocketConnected();
       }, 5000);
     } catch (e: any) {
       this.logger.error(`Failed to initialize Fyers Boot Sequence: ${e.message}`);
@@ -113,9 +101,20 @@ export class WsFyersGateway implements OnGatewayConnection, OnGatewayDisconnect,
 
     this.fyersSocket = fyersDataSocket.getInstance(accessFormat, './logs', false);
 
-    this.fyersSocket.on('connect', () => {
+    this.fyersSocket.on('connect', async () => {
       this.logger.log('Connected to Fyers Data WebSocket successfully.');
       this.fyersSocket.mode(this.fyersSocket.FullMode); // Full mode for detailed candle data
+      
+      // Auto-subscribe to all active stocks immediately after connecting
+      try {
+        const activeStocks = await this.redisService.getGlobalActiveStocks();
+        if (activeStocks && activeStocks.length > 0) {
+          this.logger.log(`Auto-subscribing ${activeStocks.length} stocks to Fyers WS...`);
+          this.fyersSocket.subscribe(activeStocks);
+        }
+      } catch (e: any) {
+        this.logger.error(`Failed to auto-subscribe: ${e.message}`);
+      }
     });
 
     this.fyersSocket.on('message', async (message: any) => {
@@ -177,8 +176,11 @@ export class WsFyersGateway implements OnGatewayConnection, OnGatewayDisconnect,
     });
 
     this.fyersSocket.on('close', () => {
-      this.logger.warn('Fyers WS closed.');
+      this.logger.warn('Fyers WS closed. Attempting to reconnect in 5 seconds...');
       this.fyersSocket = null;
+      setTimeout(() => {
+        this.ensureFyersSocketConnected();
+      }, 5000);
     });
 
     this.fyersSocket.connect();
