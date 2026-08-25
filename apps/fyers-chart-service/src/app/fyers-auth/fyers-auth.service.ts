@@ -19,7 +19,14 @@ export class FyersAuthService implements OnModuleInit {
     this.logger.log('Fyers Auth Service initialized.');
     const token = await this.redisService.get('fyers_access_token');
     if (!token) {
-      this.logger.warn('No Fyers access token found in Redis. Awaiting cron job or manual login.');
+      this.logger.warn('No Fyers access token found in Redis.');
+      const refreshToken = await this.redisService.get('fyers_refresh_token');
+      if (refreshToken) {
+        this.logger.log('Refresh token found! Generating access token immediately to recover...');
+        await this.generateDailyToken();
+      } else {
+        this.logger.warn('No refresh token found either. Awaiting manual login.');
+      }
     }
   }
 
