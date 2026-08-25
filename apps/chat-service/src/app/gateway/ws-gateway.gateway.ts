@@ -18,7 +18,9 @@ import axios from 'axios';
 
 @WebSocketGateway({
   cors: {
-    origin: '*',
+    // Restrict to known client origins — never use '*' in production
+    origin: process.env.ALLOWED_ORIGIN?.split(',') ?? ['http://localhost:5173', 'app://-'],
+    credentials: true,
   },
 })
 export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect {

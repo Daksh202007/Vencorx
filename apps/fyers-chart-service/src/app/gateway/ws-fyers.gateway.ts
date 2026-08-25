@@ -23,7 +23,9 @@ interface ActiveCandleState extends FyersCandle {
 
 @WebSocketGateway({
   cors: {
-    origin: '*',
+    // Restrict to the known client origin — never use '*' in production
+    origin: process.env.ALLOWED_ORIGIN?.split(',') ?? ['http://localhost:5173', 'app://-'],
+    credentials: true,
   },
   path: '/socket.io-fyers/',
 })
@@ -139,11 +141,20 @@ export class WsFyersGateway implements OnGatewayConnection, OnGatewayDisconnect,
       if (!token) {
         throw new Error('No token provided');
       }
-      
-      const jwtSecret = process.env.JWT_PRIVATE_KEY || 'test-secret';
-      jwt.verify(token, jwtSecret);
-      
-      this.logger.log(`Client connected: ${client.id}`);
+
+      // Verify with the RS256 PUBLIC key — same pattern as ws-gateway in chat-service
+      const publicKeyEnv = process.env.JWT_PUBLIC_KEY;
+      if (!publicKeyEnv) throw new Error('JWT_PUBLIC_KEY is not configured on this service');
+      const publicKey = publicKeyEnv.replace(/\\n/g, '\n');
+
+      const decoded = jwt.verify(token as string, publicKey, {
+        algorithms: ['RS256'],
+      }) as { id: string; email: string; role: string };
+
+      // Attach user context to the socket for downstream use
+      client.data = { userId: decoded.id, email: decoded.email };
+
+      this.logger.log(`Client connected: ${client.id} (User: ${decoded.id})`);
       await this.ensureFyersSocketConnected();
     } catch (error: any) {
       this.logger.error(`Connection rejected: ${client.id} - ${error.message}`);
