@@ -1,4 +1,5 @@
 import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from '@nestjs/common';
+import { Cron } from '@nestjs/schedule';
 import { Pool } from 'pg';
 
 export interface FyersCandle {
@@ -220,6 +221,29 @@ export class TimescaleService implements OnModuleInit, OnModuleDestroy {
     } catch (err: any) {
       this.logger.error(`Failed to fetch latest fyers candle date for ${symbol} (${resolution}): ${err.message}`);
       return null;
+    }
+  }
+
+  /**
+   * Data Retention Policy: Run every Sunday at 3:00 AM
+   * Deletes 1-minute ('1') candles older than 6 months to save disk space.
+   * 15m and 4h candles are retained forever for long-term historical analysis.
+   */
+  @Cron('0 3 * * 0')
+  async enforceRetentionPolicy() {
+    if (!this.pool || !this.isConnected) return;
+
+    this.logger.log('Starting Database Retention Policy cleanup...');
+    try {
+      const query = `
+        DELETE FROM fyers_candles 
+        WHERE resolution = '1' 
+        AND timestamp < NOW() - INTERVAL '6 months';
+      `;
+      const result = await this.pool.query(query);
+      this.logger.log(`Retention Policy: Deleted ${result.rowCount} old 1-minute candles (older than 6 months).`);
+    } catch (err: any) {
+      this.logger.error(`Failed to enforce retention policy: ${err.message}`);
     }
   }
 }

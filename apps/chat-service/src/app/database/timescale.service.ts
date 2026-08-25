@@ -61,10 +61,6 @@ export class TimescaleService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(TimescaleService.name);
   private pool: Pool | null = null;
   private isConnected = false;
-  
-  // Local cache fallbacks for development convenience if PostgreSQL is offline
-  private mockChatMessages: Map<string, ChatMessage[]> = new Map();
-  private mockStockTicks: Map<string, StockTick[]> = new Map();
 
   async onModuleInit() {
     const connectionString = process.env.TIMESCALE_URL || process.env.DATABASE_URL;
@@ -85,10 +81,8 @@ export class TimescaleService implements OnModuleInit, OnModuleDestroy {
         this.isConnected = false;
       }
     } else {
-      this.logger.warn('No PostgreSQL/TimescaleDB connection URL provided (TIMESCALE_URL / DATABASE_URL). Running in offline/mock mode.');
+      this.logger.warn('No PostgreSQL/TimescaleDB connection URL provided (TIMESCALE_URL / DATABASE_URL). Check your .env file!');
     }
-
-    this.seedMockData();
   }
 
   async onModuleDestroy() {
@@ -195,72 +189,7 @@ export class TimescaleService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  /**
-   * Seed mock dataset for local execution
-   */
-  private seedMockData() {
-    const stocks = ['RELIANCE', 'TCS', 'INFY', 'HDFCBANK'];
-    const now = new Date();
-    
-    for (const stock of stocks) {
-      const ticks: StockTick[] = [];
-      let basePrice = stock === 'RELIANCE' ? 2400 : stock === 'TCS' ? 3400 : stock === 'INFY' ? 1500 : 1600;
-      
-      for (let i = 100; i >= 0; i--) {
-        const tickTime = new Date(now.getTime() - i * 60000);
-        basePrice += (Math.random() - 0.5) * 10;
-        ticks.push(this.generateMockTick(stock, basePrice, tickTime));
-      }
-      this.mockStockTicks.set(stock, ticks);
-    }
-  }
-
-  /**
-   * Helper to generate a tick with all FULL Mode fields
-   */
-  private generateMockTick(stock: string, basePrice: number, time: Date): StockTick {
-    const change = (Math.random() - 0.5) * 10;
-    const ltp = parseFloat((basePrice + change).toFixed(2));
-    const openVal = parseFloat((basePrice - 5).toFixed(2));
-    
-    const depth: BestFiveDepth = {
-      buy: Array.from({ length: 5 }, (_, idx) => ({
-        price: parseFloat((ltp - 0.1 * (idx + 1)).toFixed(2)),
-        quantity: Math.floor(Math.random() * 200) + 10,
-        orders: Math.floor(Math.random() * 5) + 1
-      })),
-      sell: Array.from({ length: 5 }, (_, idx) => ({
-        price: parseFloat((ltp + 0.1 * (idx + 1)).toFixed(2)),
-        quantity: Math.floor(Math.random() * 200) + 10,
-        orders: Math.floor(Math.random() * 5) + 1
-      }))
-    };
-
-    return {
-      stock,
-      lastTradedPrice: ltp,
-      open: openVal,
-      high: parseFloat((ltp + 15).toFixed(2)),
-      low: parseFloat((ltp - 10).toFixed(2)),
-      close: parseFloat((basePrice - 2).toFixed(2)),
-      lastTradeQuantity: Math.floor(Math.random() * 50) + 1,
-      exchangeFeedTime: time.toISOString(),
-      exchangeTradeTime: time.toISOString(),
-      netChange: parseFloat((ltp - openVal).toFixed(2)),
-      percentChange: parseFloat((((ltp - openVal) / openVal) * 100).toFixed(2)),
-      averagePrice: parseFloat(((ltp + openVal) / 2).toFixed(2)),
-      tradeVolume: Math.floor(Math.random() * 50000) + 5000,
-      openInterest: Math.floor(Math.random() * 100000) + 20000,
-      lowerCircuit: parseFloat((openVal * 0.9).toFixed(2)),
-      upperCircuit: parseFloat((openVal * 1.1).toFixed(2)),
-      totalBuyingQuantity: Math.floor(Math.random() * 200000),
-      totalSellingQuantity: Math.floor(Math.random() * 200000),
-      fiftyTwoWeekLow: parseFloat((basePrice * 0.7).toFixed(2)),
-      fiftyTwoWeekHigh: parseFloat((basePrice * 1.4).toFixed(2)),
-      depth,
-      timestamp: time.toISOString(),
-    };
-  }
+  // Mock data removed
 
   /**
    * Save a chat message to DB or fallback array
@@ -278,14 +207,6 @@ export class TimescaleService implements OnModuleInit, OnModuleDestroy {
         this.logger.error(`Database write failed for chat message: ${err.message}`);
       }
     }
-
-    // Cache fallback
-    const room = message.room;
-    if (!this.mockChatMessages.has(room)) {
-      this.mockChatMessages.set(room, []);
-    }
-    this.mockChatMessages.get(room)?.push(message);
-    this.logger.log(`[Cache Save Chat] Room: ${room}, Msg: "${message.message}"`);
   }
 
   /**
@@ -305,8 +226,7 @@ export class TimescaleService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
-    const roomMessages = this.mockChatMessages.get(room) || [];
-    return roomMessages.slice(-limit);
+    return [];
   }
 
   /**
@@ -336,18 +256,6 @@ export class TimescaleService implements OnModuleInit, OnModuleDestroy {
       } catch (err: any) {
         this.logger.error(`Database write failed for stock tick: ${err.message}`);
       }
-    }
-
-    // Cache fallback
-    const stock = tick.stock;
-    if (!this.mockStockTicks.has(stock)) {
-      this.mockStockTicks.set(stock, []);
-    }
-    this.mockStockTicks.get(stock)?.push(tick);
-    
-    const ticks = this.mockStockTicks.get(stock) || [];
-    if (ticks.length > 1000) {
-      ticks.shift();
     }
   }
 
@@ -383,8 +291,7 @@ export class TimescaleService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
-    const ticks = this.mockStockTicks.get(stock) || [];
-    return ticks.slice(-limit);
+    return [];
   }
 
   /**

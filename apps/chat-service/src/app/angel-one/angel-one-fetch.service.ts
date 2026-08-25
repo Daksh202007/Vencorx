@@ -16,8 +16,12 @@ export class AngelOneFetchService implements OnModuleInit, OnModuleDestroy {
   private webSocket: any;
   private isConnected = false;
   
-  // Map of currently subscribed tokens to symbols (used by ticks handler for performance)
   private activeTokenToSymbolMap = new Map<string, string>();
+  
+  // Reconnection and Dead-Man Switch State
+  private reconnectAttempts = 0;
+  private lastTickTime: number = 0;
+  private deadManInterval: NodeJS.Timeout | null = null;
   
   // Scrip master URL
   private readonly SCRIP_MASTER_URL = 'https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json';
@@ -31,6 +35,37 @@ export class AngelOneFetchService implements OnModuleInit, OnModuleDestroy {
     private readonly timescaleService: TimescaleService
   ) {}
 
+  /**
+   * Checks if the Indian Stock Market is currently open (Mon-Fri, 09:15 to 15:30 IST)
+   */
+  private isMarketOpen(): boolean {
+    const now = new Date();
+    const istTime = new Date(now.getTime() + (5.5 * 60 * 60 * 1000));
+    const isWeekend = istTime.getUTCDay() === 0 || istTime.getUTCDay() === 6;
+    if (isWeekend) return false;
+
+    const hours = istTime.getUTCHours();
+    const minutes = istTime.getUTCMinutes();
+    const timeInMinutes = hours * 60 + minutes;
+    
+    return timeInMinutes >= 555 && timeInMinutes <= 930; // 09:15 to 15:30
+  }
+
+  /**
+   * Dynamically checks if the market is open using the global Redis cache 
+   * populated by the Fyers Service to prevent holiday rate limit bans.
+   */
+  private async isMarketOpenDynamically(): Promise<boolean> {
+    if (!this.isMarketOpen()) return false;
+    try {
+      const cachedStatus = await this.redisService.getClient().get('fyers_market_status_cache');
+      if (cachedStatus === 'CLOSED') return false;
+    } catch (e) {
+      // Ignore redis errors
+    }
+    return true; // Default to open
+  }
+
   async onModuleInit() {
     this.logger.log('Initializing Real Angel One Fetcher service');
     
@@ -41,7 +76,12 @@ export class AngelOneFetchService implements OnModuleInit, OnModuleDestroy {
       // Sync active stocks from Redis
       const activeStocks = await this.redisService.getGlobalActiveStocks();
       this.logger.log(`Restoring subscriptions for ${activeStocks.length} stocks from Redis...`);
-      for (const stock of activeStocks) {
+      for (let stock of activeStocks) {
+        // Strip exchange prefix if it exists (e.g. NSE:RELIANCE-EQ -> RELIANCE-EQ)
+        if (stock.includes(':')) {
+          stock = stock.split(':')[1];
+        }
+        
         const token = await this.timescaleService.getTokenForSymbol(stock);
         if (token) {
           await this.fetchThrottledAngelHistory(stock, 'NSE', token);
@@ -153,24 +193,64 @@ export class AngelOneFetchService implements OnModuleInit, OnModuleDestroy {
     });
 
     this.webSocket.connect()
-      .then(() => {
+      .then(async () => {
         this.logger.log('Angel One WebSocket connected successfully.');
         this.isConnected = true;
+        this.reconnectAttempts = 0;
+        this.lastTickTime = Date.now();
+        
+        // Start Dead-Man Switch
+        if (this.deadManInterval) clearInterval(this.deadManInterval);
+        this.deadManInterval = setInterval(async () => {
+          const isOpen = await this.isMarketOpenDynamically();
+          if (!isOpen) return; // Don't trigger on weekends/holidays/nights
+          
+          const quietTime = Date.now() - this.lastTickTime;
+          if (quietTime > 60000 && this.webSocket && this.isConnected) { // 60 seconds of silence
+            this.logger.error(`Dead-Man Switch Triggered! No Angel One ticks received for ${Math.round(quietTime/1000)}s. Forcefully reconnecting...`);
+            this.webSocket.close();
+          }
+        }, 30000);
         
         // Resubscribe to currently tracked stocks after reconnection
-        this.resubscribeAll();
+        await this.resubscribeAll();
+
+        // Catch-Up Backfill: fetch missing data for today for all subscribed stocks
+        this.logger.log('Triggering Catch-Up Backfill for Angel One stocks...');
+        const activeStocks = Array.from(this.subscribedStocks);
+        for (const stock of activeStocks) {
+          const token = await this.timescaleService.getTokenForSymbol(stock);
+          if (token) {
+            this.fetchThrottledAngelHistory(stock, 'NSE', token).catch(err => {
+               this.logger.warn(`Angel One Backfill failed for ${stock}: ${err.message}`);
+            });
+            await new Promise(r => setTimeout(r, 1000)); // Prevent rate limit on backfill
+          }
+        }
       })
       .catch((err: any) => {
         this.logger.error(`Failed to connect WebSocket: ${err.message}`);
       });
 
     this.webSocket.on('tick', (receiveData: any[]) => {
+      this.lastTickTime = Date.now(); // Update dead-man switch
       this.handleTicks(receiveData);
     });
 
     this.webSocket.on('close', () => {
-      this.logger.warn('Angel One WebSocket closed. Will attempt reconnect or wait for next module init...');
+      if (this.deadManInterval) {
+        clearInterval(this.deadManInterval);
+        this.deadManInterval = null;
+      }
       this.isConnected = false;
+      this.reconnectAttempts++;
+      
+      const backoffMs = Math.min(5000 * Math.pow(3, this.reconnectAttempts - 1), 30 * 60 * 1000);
+      this.logger.warn(`Angel One WS closed. Attempting to reconnect in ${Math.round(backoffMs/1000)} seconds (Attempt ${this.reconnectAttempts})...`);
+      
+      setTimeout(() => {
+        this.authenticateAndConnect();
+      }, backoffMs);
     });
 
     this.webSocket.on('error', (err: any) => {
@@ -247,6 +327,8 @@ export class AngelOneFetchService implements OnModuleInit, OnModuleDestroy {
   }
 
   public async subscribeStock(stock: string): Promise<boolean> {
+    if (stock.includes(':')) stock = stock.split(':')[1];
+    
     const token = await this.timescaleService.getTokenForSymbol(stock);
     if (!token) {
       this.logger.warn(`Cannot subscribe to ${stock}. Symbol not found in PostgreSQL Scrip Master.`);
@@ -279,6 +361,8 @@ export class AngelOneFetchService implements OnModuleInit, OnModuleDestroy {
   }
 
   public async unsubscribeStock(stock: string) {
+    if (stock.includes(':')) stock = stock.split(':')[1];
+    
     if (this.subscribedStocks.has(stock)) {
       this.subscribedStocks.delete(stock);
       
@@ -338,6 +422,8 @@ export class AngelOneFetchService implements OnModuleInit, OnModuleDestroy {
   }
 
   async fetchHistoryAndAddStock(symbol: string, exchange: string): Promise<any> {
+    if (symbol.includes(':')) symbol = symbol.split(':')[1];
+    
     const token = await this.timescaleService.getTokenForSymbol(symbol);
     if (!token) {
       return { success: false, error: `Token not found for symbol ${symbol} in PostgreSQL database.` };
