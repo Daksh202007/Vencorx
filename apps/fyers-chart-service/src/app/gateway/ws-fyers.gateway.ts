@@ -99,10 +99,7 @@ export class WsFyersGateway implements OnGatewayConnection, OnGatewayDisconnect,
    */
   private isMarketOpen(): boolean {
     const now = new Date();
-    // Use IST timezone for reliable checking regardless of server UTC time
-    const istOptions = { timeZone: 'Asia/Kolkata', hour12: false };
-    const day = parseInt(new Intl.DateTimeFormat('en-US', { ...istOptions, weekday: 'i' as any }).format(now)); // wait, weekday: 'i' is invalid. Let's use getUTCDay() with offset.
-    
+    // Use manual offset for reliable checking regardless of server UTC time
     // Quick UTC to IST logic
     const istTime = new Date(now.getTime() + (5.5 * 60 * 60 * 1000));
     const isWeekend = istTime.getUTCDay() === 0 || istTime.getUTCDay() === 6;

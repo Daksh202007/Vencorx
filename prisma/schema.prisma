@@ -23,6 +23,11 @@ model User {
   watchlist      String[]  @default([])
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
+
+  portfolio      UserPortfolio?
+  orders         PaperOrder[]
+  positions      PaperPosition[]
+  alerts         PriceAlert[]
 }
 
 model Admin {
@@ -35,4 +40,72 @@ model Admin {
   role           Role      @default(ADMIN)
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
+}
+
+// ----------------------------------------------------
+// TRADING MODELS (Paper Trading, OMS, Price Alerts)
+// ----------------------------------------------------
+
+model UserPortfolio {
+  id             String    @id @default(auto()) @map("_id") @db.ObjectId
+  userId         String    @unique @db.ObjectId
+  balance        Float     @default(1000000.0) // Virtual ₹1,000,000
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  user           User      @relation(fields: [userId], references: [id])
+}
+
+enum OrderType {
+  MARKET
+  LIMIT
+}
+
+enum OrderSide {
+  BUY
+  SELL
+}
+
+enum OrderStatus {
+  PENDING
+  EXECUTED
+  CANCELLED
+}
+
+model PaperOrder {
+  id             String      @id @default(auto()) @map("_id") @db.ObjectId
+  userId         String      @db.ObjectId
+  symbol         String
+  side           OrderSide
+  type           OrderType
+  quantity       Int
+  price          Float?      // Target price for Limit Orders
+  triggerPrice   Float?      // For Stop-Loss
+  status         OrderStatus @default(PENDING)
+  executedPrice  Float?
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+  user           User        @relation(fields: [userId], references: [id])
+}
+
+model PaperPosition {
+  id             String    @id @default(auto()) @map("_id") @db.ObjectId
+  userId         String    @db.ObjectId
+  symbol         String
+  quantity       Int       // Positive for Long, Negative for Short
+  averagePrice   Float
+  realizedPnL    Float     @default(0.0)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  user           User      @relation(fields: [userId], references: [id])
+}
+
+model PriceAlert {
+  id             String    @id @default(auto()) @map("_id") @db.ObjectId
+  userId         String    @db.ObjectId
+  symbol         String
+  targetPrice    Float
+  isTriggered    Boolean   @default(false)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  user           User      @relation(fields: [userId], references: [id])
 }

@@ -40,12 +40,12 @@ export class AngelOneFetchService implements OnModuleInit, OnModuleDestroy {
    */
   private isMarketOpen(): boolean {
     const now = new Date();
-    const istTime = new Date(now.getTime() + (5.5 * 60 * 60 * 1000));
-    const isWeekend = istTime.getUTCDay() === 0 || istTime.getUTCDay() === 6;
+    const istTime = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+    const isWeekend = istTime.getDay() === 0 || istTime.getDay() === 6;
     if (isWeekend) return false;
 
-    const hours = istTime.getUTCHours();
-    const minutes = istTime.getUTCMinutes();
+    const hours = istTime.getHours();
+    const minutes = istTime.getMinutes();
     const timeInMinutes = hours * 60 + minutes;
     
     return timeInMinutes >= 555 && timeInMinutes <= 930; // 09:15 to 15:30

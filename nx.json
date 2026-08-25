@@ -55,7 +55,8 @@
       },
       "exclude": [
         "apps/chart-service-e2e/**/*",
-        "apps/fyers-chart-service-e2e/**/*"
+        "apps/fyers-chart-service-e2e/**/*",
+        "apps/trading-service-e2e/**/*"
       ]
     },
     {
