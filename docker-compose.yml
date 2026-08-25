@@ -35,6 +35,7 @@ services:
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
+    restart: always
     ports:
       - '2181:2181'
 
@@ -44,6 +45,7 @@ services:
     container_name: ai_tradesignal_kafka
     depends_on:
       - zookeeper
+    restart: always
     ports:
       - '9092:9092'
     environment:
