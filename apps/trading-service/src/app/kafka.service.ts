@@ -22,7 +22,7 @@ export class KafkaService implements OnModuleInit, OnModuleDestroy {
       await this.consumer.connect();
       this.logger.log('Kafka Consumer connected successfully');
     } catch (err: any) {
-      this.logger.error(`Failed to connect Kafka Consumer: ${err.message}`);
+      this.logger.debug(`Failed to connect Kafka Consumer: ${err.message}`);
     }
   }
 

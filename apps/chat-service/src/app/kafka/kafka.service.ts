@@ -51,9 +51,10 @@ export class KafkaService implements OnModuleInit, OnModuleDestroy {
       });
       this.logger.verbose(`Published message to Kafka topic: ${topic}`);
     } catch (err: any) {
-      this.logger.error(`Error sending message to Kafka: ${err.message}`);
+      // Change from error to debug/warn to prevent spamming Telegram when offline
+      this.logger.debug(`Could not send to Kafka: ${err.message}`);
       // Fallback/mock logging for local testing without active Kafka broker
-      this.logger.log(`[Offline Mock Send] Topic: ${topic}, Msg: ${JSON.stringify(message)}`);
+      this.logger.debug(`[Offline Mock Send] Topic: ${topic}, Msg: ${JSON.stringify(message)}`);
     }
   }
 
