@@ -6,9 +6,16 @@
 import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app/app.module';
+import { TelegramLoggerService } from './app/telegram-logger.service';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, {
+    bufferLogs: true,
+  });
+  
+  // Use our custom Telegram Logger as the primary logger for everything
+  app.useLogger(app.get(TelegramLoggerService));
+
   const globalPrefix = 'api';
   app.setGlobalPrefix(globalPrefix);
 
