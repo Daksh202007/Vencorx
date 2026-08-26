@@ -83,7 +83,10 @@ export class FyersDataService {
   /**
    * Get history from DB, fallback to fetching from Fyers if not found
    */
-  async getHistory(symbol: string, resolution: string, from: Date, to: Date): Promise<FyersCandle[]> {
+  async getHistory(symbolRaw: string, resolution: string, from: Date, to: Date): Promise<FyersCandle[]> {
+    const symbol = symbolRaw.includes(':') ? symbolRaw : `NSE:${symbolRaw}`;
+    
+    // 1. Try to get data from TimescaleDB first
     let dbCandles = await this.timescaleService.getHistoricalCandles(symbol, resolution, from, to);
     
     let needsFetch = false;

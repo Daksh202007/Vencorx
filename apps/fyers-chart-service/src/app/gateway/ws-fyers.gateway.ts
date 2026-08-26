@@ -237,8 +237,11 @@ export class WsFyersGateway implements OnGatewayConnection, OnGatewayDisconnect,
       try {
         const activeStocks = await this.redisService.getGlobalActiveStocks();
         if (activeStocks && activeStocks.length > 0) {
-          this.logger.log(`Auto-subscribing ${activeStocks.length} stocks to Fyers WS...`);
-          this.fyersSocket.subscribe(activeStocks);
+          // Sanitize symbols to ensure they have the NSE: prefix required by Fyers
+          const fyersStocks = activeStocks.map(s => s.includes(':') ? s : `NSE:${s}`);
+          
+          this.logger.log(`Auto-subscribing ${fyersStocks.length} stocks to Fyers WS...`);
+          this.fyersSocket.subscribe(fyersStocks);
 
           // Catch-Up Backfill: Fetch missing data for today in the background to patch gaps
           this.logger.log('Triggering Catch-Up Backfill for active stocks...');
@@ -246,7 +249,7 @@ export class WsFyersGateway implements OnGatewayConnection, OnGatewayDisconnect,
           todayStart.setHours(9, 0, 0, 0); // 9:00 AM IST approx
           const now = new Date();
           
-          for (const stock of activeStocks) {
+          for (const stock of fyersStocks) {
             // Non-blocking catchup for 1m, 15m, 4h
             ['1', '15', '240'].forEach(res => {
               this.fyersDataService.getHistory(stock, res, todayStart, now).catch(err => {
@@ -346,8 +349,9 @@ export class WsFyersGateway implements OnGatewayConnection, OnGatewayDisconnect,
 
   @SubscribeMessage('subscribe_fyers_chart')
   handleSubscribe(@MessageBody() data: { symbol: string }, @ConnectedSocket() client: Socket) {
-    const symbol = data.symbol;
+    let symbol = data.symbol;
     if (!symbol) return;
+    if (!symbol.includes(':')) symbol = `NSE:${symbol}`;
     
     this.logger.log(`Client ${client.id} subscribed to ${symbol}`);
     client.join(symbol);
@@ -365,8 +369,9 @@ export class WsFyersGateway implements OnGatewayConnection, OnGatewayDisconnect,
 
   @SubscribeMessage('unsubscribe_fyers_chart')
   handleUnsubscribe(@MessageBody() data: { symbol: string }, @ConnectedSocket() client: Socket) {
-    const symbol = data.symbol;
+    let symbol = data.symbol;
     if (!symbol) return;
+    if (!symbol.includes(':')) symbol = `NSE:${symbol}`;
     
     this.logger.log(`Client ${client.id} unsubscribed from ${symbol}`);
     client.leave(symbol);
