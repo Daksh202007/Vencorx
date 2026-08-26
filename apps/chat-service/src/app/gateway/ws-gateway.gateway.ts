@@ -19,7 +19,7 @@ import axios from 'axios';
 @WebSocketGateway({
   cors: {
     // Restrict to known client origins — never use '*' in production
-    origin: process.env.ALLOWED_ORIGIN?.split(',') ?? ['http://localhost:5173', 'app://-'],
+    origin: process.env.ALLOWED_ORIGIN === '*' ? true : (process.env.ALLOWED_ORIGIN?.split(',') ?? ['http://localhost:5173', 'app://-']),
     credentials: true,
   },
 })

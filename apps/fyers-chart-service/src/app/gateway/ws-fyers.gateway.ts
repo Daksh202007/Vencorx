@@ -24,7 +24,7 @@ interface ActiveCandleState extends FyersCandle {
 @WebSocketGateway({
   cors: {
     // Restrict to the known client origin — never use '*' in production
-    origin: process.env.ALLOWED_ORIGIN?.split(',') ?? ['http://localhost:5173', 'app://-'],
+    origin: process.env.ALLOWED_ORIGIN === '*' ? true : (process.env.ALLOWED_ORIGIN?.split(',') ?? ['http://localhost:5173', 'app://-']),
     credentials: true,
   },
   path: '/socket.io-fyers/',
