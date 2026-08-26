@@ -8,7 +8,7 @@ import {
   ConnectedSocket,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
-import { Logger, OnModuleInit } from '@nestjs/common';
+import { Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import * as jwt from 'jsonwebtoken';
 import { FyersAuthService } from '../fyers-auth/fyers-auth.service';
 import { TimescaleService, FyersCandle } from '../database/timescale.service';
@@ -29,7 +29,7 @@ interface ActiveCandleState extends FyersCandle {
   },
   path: '/socket.io-fyers/',
 })
-export class WsFyersGateway implements OnGatewayConnection, OnGatewayDisconnect, OnModuleInit {
+export class WsFyersGateway implements OnGatewayConnection, OnGatewayDisconnect, OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(WsFyersGateway.name);
   private fyersSocket: any = null;
   private activeCandles = new Map<string, ActiveCandleState>();
@@ -38,6 +38,7 @@ export class WsFyersGateway implements OnGatewayConnection, OnGatewayDisconnect,
   private reconnectAttempts = 0;
   private lastTickTime: number = 0;
   private deadManInterval: NodeJS.Timeout | null = null;
+  private marketStatusInterval: NodeJS.Timeout | null = null;
 
   @WebSocketServer()
   server!: Server;
@@ -125,13 +126,26 @@ export class WsFyersGateway implements OnGatewayConnection, OnGatewayDisconnect,
 
   async onModuleInit() {
     try {
+      // Standalone Fyers Market Status sync loop (every 5 minutes)
+      this.marketStatusInterval = setInterval(async () => {
+        await this.isMarketOpenDynamically();
+      }, 5 * 60 * 1000);
+
       // Delay initialization slightly to allow DB/Redis connections to establish
       setTimeout(async () => {
         this.logger.log(`Fyers Boot Sequence: Starting connection...`);
+        // Immediately run one check to populate Redis on startup
+        await this.isMarketOpenDynamically();
         await this.ensureFyersSocketConnected();
       }, 5000);
     } catch (e: any) {
       this.logger.error(`Failed to initialize Fyers Boot Sequence: ${e.message}`);
+    }
+  }
+
+  onModuleDestroy() {
+    if (this.marketStatusInterval) {
+      clearInterval(this.marketStatusInterval);
     }
   }
 
