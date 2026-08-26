@@ -274,6 +274,15 @@ export class WsFyersGateway implements OnGatewayConnection, OnGatewayDisconnect,
     this.fyersSocket.on('message', async (message: any) => {
       this.lastTickTime = Date.now(); // Update dead-man switch
 
+      // --- Strict Market Hours Filter ---
+      // We ignore snapshot ticks sent by Fyers after market hours to avoid creating fake 0-volume candles.
+      const now = new Date();
+      const currentUTCMinutes = now.getUTCHours() * 60 + now.getUTCMinutes();
+      // 09:15 IST = 03:45 UTC = 225 mins | 15:35 IST = 10:05 UTC = 605 mins (added 5 min buffer for delayed exchange packets)
+      if (currentUTCMinutes < 225 || currentUTCMinutes > 605) {
+        return; // Ignore the tick
+      }
+      
       // Secretly aggregate ticks into 1m, 15m, 4h candles
       if (message && message.symbol) {
         const timestamp = message.timestamp ? new Date(message.timestamp * 1000) : new Date();
