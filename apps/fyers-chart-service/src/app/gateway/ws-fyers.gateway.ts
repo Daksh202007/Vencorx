@@ -32,6 +32,7 @@ interface ActiveCandleState extends FyersCandle {
 export class WsFyersGateway implements OnGatewayConnection, OnGatewayDisconnect, OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(WsFyersGateway.name);
   private fyersSocket: any = null;
+  private isWsConnected = false;
   private activeCandles = new Map<string, ActiveCandleState>();
   
   // Reconnection and Dead-Man Switch State
@@ -185,7 +186,7 @@ export class WsFyersGateway implements OnGatewayConnection, OnGatewayDisconnect,
   }
 
   private async ensureFyersSocketConnected() {
-    if (this.fyersSocket && this.fyersSocket.isConnected()) return;
+    if (this.fyersSocket && this.isWsConnected) return;
 
     const token = await this.fyersAuthService.getAccessToken();
     if (!token) {
@@ -199,6 +200,7 @@ export class WsFyersGateway implements OnGatewayConnection, OnGatewayDisconnect,
     this.fyersSocket = fyersDataSocket.getInstance(accessFormat, './logs', false);
 
     this.fyersSocket.on('connect', async () => {
+      this.isWsConnected = true;
       this.logger.log('Connected to Fyers Data WebSocket successfully.');
       this.reconnectAttempts = 0; // Reset backoff on successful connect
       this.lastTickTime = Date.now();
@@ -211,8 +213,16 @@ export class WsFyersGateway implements OnGatewayConnection, OnGatewayDisconnect,
         if (!isOpen) return; // Don't trigger on weekends/holidays/nights
         
         const quietTime = Date.now() - this.lastTickTime;
+        
+        // Only trigger dead-man switch if we are actually subscribed to stocks!
+        const activeStocks = await this.redisService.getGlobalActiveStocks();
+        if (!activeStocks || activeStocks.length === 0) {
+           return; // No active stocks, so it's normal that we aren't getting ticks
+        }
+
         if (quietTime > 60000 && this.fyersSocket) { // 60 seconds of silence during market hours
-          this.logger.error(`Dead-Man Switch Triggered! No ticks received for ${Math.round(quietTime/1000)}s. Forcefully reconnecting...`);
+          // Changed to warn so it doesn't spam Telegram as an 'Error' unless it's critical
+          this.logger.warn(`Dead-Man Switch Triggered! No ticks received for ${Math.round(quietTime/1000)}s. Forcefully reconnecting...`);
           // Force close, which will trigger the 'close' event and our auto-reconnect logic
           if (this.fyersSocket.close) {
              this.fyersSocket.close();
@@ -313,6 +323,7 @@ export class WsFyersGateway implements OnGatewayConnection, OnGatewayDisconnect,
     });
 
     this.fyersSocket.on('close', () => {
+      this.isWsConnected = false;
       if (this.deadManInterval) {
         clearInterval(this.deadManInterval);
         this.deadManInterval = null;
@@ -341,8 +352,12 @@ export class WsFyersGateway implements OnGatewayConnection, OnGatewayDisconnect,
     this.logger.log(`Client ${client.id} subscribed to ${symbol}`);
     client.join(symbol);
     
-    if (this.fyersSocket && this.fyersSocket.isConnected()) {
-      this.fyersSocket.subscribe([symbol]);
+    if (this.fyersSocket && this.isWsConnected) {
+      try {
+        this.fyersSocket.subscribe([symbol]);
+      } catch (e: any) {
+        this.logger.error(`Fyers WS Subscribe Error: ${e.message}`);
+      }
     }
     
     return { event: 'subscribed', symbol };
@@ -358,8 +373,12 @@ export class WsFyersGateway implements OnGatewayConnection, OnGatewayDisconnect,
     
     // Check if anyone else is still in the room before unsubscribing from Fyers
     const roomSize = this.server.sockets.adapter.rooms.get(symbol)?.size || 0;
-    if (roomSize === 0 && this.fyersSocket && this.fyersSocket.isConnected()) {
-      this.fyersSocket.unsubscribe([symbol]);
+    if (roomSize === 0 && this.fyersSocket && this.isWsConnected) {
+      try {
+        this.fyersSocket.unsubscribe([symbol]);
+      } catch (e: any) {
+        this.logger.error(`Fyers WS Unsubscribe Error: ${e.message}`);
+      }
     }
     
     return { event: 'unsubscribed', symbol };
