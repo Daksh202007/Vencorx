@@ -72,8 +72,32 @@ export class FyersAuthService implements OnModuleInit {
   }
 
   async getAccessToken(): Promise<string | null> {
-    const token = await this.redisService.get('fyers_access_token');
-    return token ? token.toString() : null;
+    const tokenStr = await this.redisService.get('fyers_access_token');
+    if (!tokenStr) return null;
+    
+    const token = tokenStr.toString();
+    try {
+      // Manually parse JWT to check expiration without verifying signature
+      const payloadBase64 = token.split('.')[1];
+      if (payloadBase64) {
+        const payloadStr = Buffer.from(payloadBase64, 'base64').toString('utf-8');
+        const payload = JSON.parse(payloadStr);
+        const exp = payload.exp;
+        
+        // If expired or expiring in the next 5 minutes
+        if (exp && (Date.now() / 1000) > (exp - 300)) {
+          this.logger.warn('Fyers access token is expired or expiring soon. Regenerating...');
+          await this.redisService.getClient().del('fyers_access_token');
+          await this.generateDailyToken();
+          const newToken = await this.redisService.get('fyers_access_token');
+          return newToken ? newToken.toString() : null;
+        }
+      }
+    } catch (e) {
+      this.logger.error(`Error decoding Fyers JWT token: ${e}`);
+    }
+
+    return token;
   }
 
   async generateTokensFromAuthCode(authCode: string): Promise<any> {
