@@ -245,9 +245,9 @@ export class WsFyersGateway implements OnGatewayConnection, OnGatewayDisconnect,
 
           // Catch-Up Backfill: Fetch missing data for today in the background to patch gaps
           this.logger.log('Triggering Catch-Up Backfill for active stocks...');
-          const todayStart = new Date();
-          todayStart.setHours(9, 0, 0, 0); // 9:00 AM IST approx
           const now = new Date();
+          // Safely calculate 09:15 IST using UTC (03:45 UTC) to avoid Docker timezone issues
+          const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 3, 45, 0));
           
           for (const stock of fyersStocks) {
             // Non-blocking catchup for 1m, 15m, 4h
