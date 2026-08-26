@@ -133,10 +133,14 @@ export class WsFyersGateway implements OnGatewayConnection, OnGatewayDisconnect,
 
       // Delay initialization slightly to allow DB/Redis connections to establish
       setTimeout(async () => {
-        this.logger.log(`Fyers Boot Sequence: Starting connection...`);
-        // Immediately run one check to populate Redis on startup
-        await this.isMarketOpenDynamically();
-        await this.ensureFyersSocketConnected();
+        try {
+          this.logger.log(`Fyers Boot Sequence: Starting connection...`);
+          // Immediately run one check to populate Redis on startup
+          await this.isMarketOpenDynamically();
+          await this.ensureFyersSocketConnected();
+        } catch (e: any) {
+          this.logger.error(`Error in Fyers Boot Sequence timeout: ${e.message}`);
+        }
       }, 5000);
     } catch (e: any) {
       this.logger.error(`Failed to initialize Fyers Boot Sequence: ${e.message}`);
