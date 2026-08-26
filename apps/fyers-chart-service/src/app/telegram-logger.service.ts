@@ -12,7 +12,7 @@ export class TelegramLoggerService extends ConsoleLogger {
     this.setContext('Application');
   }
 
-  error(message: any, stack?: string, context?: string) {
+  override error(message: any, stack?: string, context?: string) {
     // 1. Call the original console.error so it still prints to the terminal
     super.error(message, stack, context);
 
