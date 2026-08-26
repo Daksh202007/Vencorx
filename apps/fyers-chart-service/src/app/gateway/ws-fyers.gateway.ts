@@ -33,6 +33,7 @@ export class WsFyersGateway implements OnGatewayConnection, OnGatewayDisconnect,
   private readonly logger = new Logger(WsFyersGateway.name);
   private fyersSocket: any = null;
   private isWsConnected = false;
+  private isWsConnecting = false;
   private activeCandles = new Map<string, ActiveCandleState>();
   
   // Reconnection and Dead-Man Switch State
@@ -187,20 +188,25 @@ export class WsFyersGateway implements OnGatewayConnection, OnGatewayDisconnect,
 
   private async ensureFyersSocketConnected() {
     if (this.fyersSocket && this.isWsConnected) return;
+    if (this.isWsConnecting) return; // Prevent concurrent connection spam
 
-    const token = await this.fyersAuthService.getAccessToken();
-    if (!token) {
-      this.logger.error('Cannot connect Fyers WS: No access token available.');
-      return;
-    }
+    this.isWsConnecting = true;
+    try {
+      const token = await this.fyersAuthService.getAccessToken();
+      if (!token) {
+        this.logger.error('Cannot connect Fyers WS: No access token available.');
+        this.isWsConnecting = false;
+        return;
+      }
 
-    const appId = process.env.FYERS_APP_ID || '';
-    const accessFormat = `${appId}:${token}`;
+      const appId = process.env.FYERS_APP_ID || '';
+      const accessFormat = `${appId}:${token}`;
 
-    this.fyersSocket = fyersDataSocket.getInstance(accessFormat, './logs', false);
+      this.fyersSocket = fyersDataSocket.getInstance(accessFormat, './logs', false);
 
     this.fyersSocket.on('connect', async () => {
       this.isWsConnected = true;
+      this.isWsConnecting = false;
       this.logger.log('Connected to Fyers Data WebSocket successfully.');
       this.reconnectAttempts = 0; // Reset backoff on successful connect
       this.lastTickTime = Date.now();
@@ -322,11 +328,13 @@ export class WsFyersGateway implements OnGatewayConnection, OnGatewayDisconnect,
     });
 
     this.fyersSocket.on('error', (message: any) => {
+      this.isWsConnecting = false; // Reset lock on error just in case
       this.logger.error(`Fyers WS Error: ${JSON.stringify(message)}`);
     });
 
     this.fyersSocket.on('close', () => {
       this.isWsConnected = false;
+      this.isWsConnecting = false;
       if (this.deadManInterval) {
         clearInterval(this.deadManInterval);
         this.deadManInterval = null;
@@ -345,6 +353,10 @@ export class WsFyersGateway implements OnGatewayConnection, OnGatewayDisconnect,
     });
 
     this.fyersSocket.connect();
+    } catch (e: any) {
+      this.isWsConnecting = false;
+      this.logger.error(`Failed to initialize Fyers WS: ${e.message}`);
+    }
   }
 
   @SubscribeMessage('subscribe_fyers_chart')
