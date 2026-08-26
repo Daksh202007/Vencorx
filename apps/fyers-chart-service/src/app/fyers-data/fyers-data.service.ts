@@ -70,6 +70,9 @@ export class FyersDataService {
         });
         
         return candles;
+      } else if (response.data && response.data.s === 'no_data') {
+        this.logger.log(`Fyers API returned no data for ${symbol} between ${from} and ${to}. (Market likely closed or invalid range)`);
+        return [];
       } else {
         this.logger.error(`Fyers API error: ${JSON.stringify(response.data)}`);
         throw new Error(response.data.message || 'Failed to fetch history');
@@ -86,8 +89,15 @@ export class FyersDataService {
   async getHistory(symbolRaw: string, resolution: string, from: Date, to: Date): Promise<FyersCandle[]> {
     const symbol = symbolRaw.includes(':') ? symbolRaw : `NSE:${symbolRaw}`;
     
+    // Clamp future 'to' dates to the current time to prevent asking for data that doesn't exist yet
+    const now = new Date();
+    let clampedTo = to;
+    if (to.getTime() > now.getTime()) {
+      clampedTo = now;
+    }
+    
     // 1. Try to get data from TimescaleDB first
-    let dbCandles = await this.timescaleService.getHistoricalCandles(symbol, resolution, from, to);
+    let dbCandles = await this.timescaleService.getHistoricalCandles(symbol, resolution, from, clampedTo);
     
     let needsFetch = false;
 
@@ -96,7 +106,7 @@ export class FyersDataService {
     } else {
       // Check if we are missing recent data (gap detection)
       const lastCandleTime = dbCandles[dbCandles.length - 1].timestamp.getTime();
-      const expectedEnd = Math.min(to.getTime(), Date.now());
+      const expectedEnd = clampedTo.getTime();
       
       // If the last candle in DB is more than 60 minutes older than the requested end time (or 'now'),
       // it means there might be a gap (e.g. server was off, or it's just incomplete).
@@ -110,12 +120,12 @@ export class FyersDataService {
     if (needsFetch) {
       this.logger.log(`Fetching history from Fyers API for ${symbol}...`);
       const fromStr = Math.floor(from.getTime() / 1000).toString();
-      const toStr = Math.floor(to.getTime() / 1000).toString();
+      const toStr = Math.floor(clampedTo.getTime() / 1000).toString();
       
       try {
         await this.fetchAndSaveHistory(symbol, resolution, fromStr, toStr);
         // Re-query the DB to get the complete, newly merged dataset
-        dbCandles = await this.timescaleService.getHistoricalCandles(symbol, resolution, from, to);
+        dbCandles = await this.timescaleService.getHistoricalCandles(symbol, resolution, from, clampedTo);
       } catch (err: any) {
         this.logger.error(`Failed to fetch fresh history from Fyers: ${err.message}`);
         // If Fyers fails, we just fall through and return whatever we had in the DB
