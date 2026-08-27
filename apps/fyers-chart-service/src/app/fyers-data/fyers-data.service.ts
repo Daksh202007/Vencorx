@@ -7,7 +7,7 @@ import axios from 'axios';
 export class FyersDataService {
   private readonly logger = new Logger(FyersDataService.name);
   private readonly baseUrl = 'https://api-t1.fyers.in/data/history';
-  private activeFetches = new Map<string, Promise<void>>();
+  private activeFetches = new Map<string, Promise<FyersCandle[]>>();
 
   constructor(
     private readonly fyersAuthService: FyersAuthService,
