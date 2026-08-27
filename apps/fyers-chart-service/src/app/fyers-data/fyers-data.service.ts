@@ -7,6 +7,7 @@ import axios from 'axios';
 export class FyersDataService {
   private readonly logger = new Logger(FyersDataService.name);
   private readonly baseUrl = 'https://api-t1.fyers.in/data/history';
+  private activeFetches = new Map<string, Promise<void>>();
 
   constructor(
     private readonly fyersAuthService: FyersAuthService,
@@ -21,57 +22,79 @@ export class FyersDataService {
    * @param to Epoch timestamp in seconds or 'yyyy-mm-dd'
    */
   async fetchAndSaveHistory(symbol: string, resolution: string, from: string, to: string) {
-    try {
-      const token = await this.fyersAuthService.getAccessToken();
-      if (!token) {
-        throw new Error('Fyers access token not available. Please generate it first.');
-      }
+    const fetchKey = `${symbol}-${resolution}`;
 
-      // Fyers requires date_format=1 for yyyy-mm-dd format, or 0 for epoch
-      const dateFormat = from.includes('-') ? '1' : '0';
+    // Request Coalescing: If a fetch for this symbol/resolution is already running (or recently finished), just wait for it!
+    if (this.activeFetches.has(fetchKey)) {
+      return this.activeFetches.get(fetchKey);
+    }
 
-      const response = await axios.get(this.baseUrl, {
-        params: {
-          symbol,
-          resolution,
-          date_format: dateFormat,
-          range_from: from,
-          range_to: to,
-          cont_flag: '1'
-        },
-        headers: {
-          Authorization: `${process.env.FYERS_APP_ID}:${token}`
+    const fetchPromise = (async () => {
+      try {
+        const token = await this.fyersAuthService.getAccessToken();
+        if (!token) {
+          throw new Error('Fyers access token not available. Please generate it first.');
         }
-      });
 
-      if (response.data && response.data.s === 'ok') {
-        const candles: FyersCandle[] = response.data.candles.map((c: any) => ({
-          symbol,
-          resolution,
-          timestamp: new Date(c[0] * 1000),
-          open: c[1],
-          high: c[2],
-          low: c[3],
-          close: c[4],
-          volume: c[5]
-        }));
+        // Fyers requires date_format=1 for yyyy-mm-dd format, or 0 for epoch
+        const dateFormat = from.includes('-') ? '1' : '0';
 
-        this.logger.log(`Fetched ${candles.length} candles for ${symbol} at resolution ${resolution}. Saving to DB...`);
-        
-        await this.timescaleService.saveCandles(candles);
+        const response = await axios.get(this.baseUrl, {
+          params: {
+            symbol,
+            resolution,
+            date_format: dateFormat,
+            range_from: from,
+            range_to: to,
+            cont_flag: '1'
+          },
+          headers: {
+            Authorization: `${process.env.FYERS_APP_ID}:${token}`
+          }
+        });
 
-        
-        return candles;
-      } else if (response.data && response.data.s === 'no_data') {
-        this.logger.log(`Fyers API returned no data for ${symbol} between ${from} and ${to}. (Market likely closed or invalid range)`);
-        return [];
-      } else {
-        this.logger.error(`Fyers API error: ${JSON.stringify(response.data)}`);
-        throw new Error(response.data.message || 'Failed to fetch history');
+        if (response.data && response.data.s === 'ok') {
+          const candles: FyersCandle[] = response.data.candles.map((c: any) => ({
+            symbol,
+            resolution,
+            timestamp: new Date(c[0] * 1000),
+            open: c[1],
+            high: c[2],
+            low: c[3],
+            close: c[4],
+            volume: c[5]
+          }));
+
+          if (candles.length > 0) {
+            await this.timescaleService.saveCandles(candles);
+            this.logger.log(`Successfully fetched and saved ${candles.length} historical candles for ${symbol}`);
+            return candles;
+          } else {
+            this.logger.log(`No historical data found for ${symbol} between ${from} and ${to}`);
+            return [];
+          }
+        } else if (response.data && response.data.s === 'no_data') {
+          this.logger.log(`Fyers API returned no data for ${symbol}.`);
+          return [];
+        } else {
+          throw new Error(response.data.message || 'Failed to fetch history');
+        }
+      } catch (error: any) {
+        this.logger.error(`Error fetching history for ${symbol}: ${error.message}`);
+        throw error;
       }
-    } catch (error: any) {
-      this.logger.error(`Error fetching history for ${symbol}: ${error.message}`);
-      throw error;
+    })();
+
+    this.activeFetches.set(fetchKey, fetchPromise);
+
+    try {
+      return await fetchPromise;
+    } finally {
+      // Attempt Cache: Keep the completed promise in the map for 15 seconds. 
+      // This guarantees we NEVER hit the Fyers API more than once every 15 seconds per symbol!
+      setTimeout(() => {
+        this.activeFetches.delete(fetchKey);
+      }, 15000);
     }
   }
 
