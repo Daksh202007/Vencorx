@@ -350,8 +350,8 @@ export class WsFyersGateway implements OnGatewayConnection, OnGatewayDisconnect,
 
           this.activeCandles.set(cacheKey, active);
           
-          // Save to DB (Upsert) so we don't lose data on crash
-          await this.timescaleService.saveCandles([active]);
+          // (REMOVED) Per-tick database save was removed to prevent 100x writes per second.
+          // The candle is securely held in RAM and will be saved ONCE when it closes.
           
           // Emit interval-specific real-time updates to websocket clients
           this.server.to(message.symbol).emit(`fyers_candle_update_${resStr}`, active);
