@@ -14,6 +14,7 @@ import { FyersAuthService } from '../fyers-auth/fyers-auth.service';
 import { TimescaleService, FyersCandle } from '../database/timescale.service';
 import { RedisService } from '../redis/redis.service';
 import { FyersDataService } from '../fyers-data/fyers-data.service';
+import { KafkaService } from '../kafka/kafka.service';
 import axios from 'axios';
 const fyersDataSocket = require('fyers-api-v3').fyersDataSocket;
 
@@ -141,7 +142,8 @@ export class WsFyersGateway implements OnGatewayConnection, OnGatewayDisconnect,
     private readonly fyersAuthService: FyersAuthService,
     private readonly timescaleService: TimescaleService,
     private readonly redisService: RedisService,
-    private readonly fyersDataService: FyersDataService
+    private readonly fyersDataService: FyersDataService,
+    private readonly kafkaService: KafkaService
   ) {}
 
   async onModuleInit() {
@@ -353,6 +355,13 @@ export class WsFyersGateway implements OnGatewayConnection, OnGatewayDisconnect,
           
           // Emit interval-specific real-time updates to websocket clients
           this.server.to(message.symbol).emit(`fyers_candle_update_${resStr}`, active);
+          
+          // Broadcast live tick to Kafka so chat-service can forward it to the frontend
+          this.kafkaService.sendMessage(`fyers-chart-update-${message.symbol}-${resStr}`, {
+            symbol: message.symbol,
+            resolution: resStr,
+            candles: [active],
+          }).catch(e => this.logger.error(`Failed to publish live tick to Kafka: ${e.message}`));
         }
       }
     });
