@@ -199,6 +199,24 @@ export class TimescaleService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
+   * Get all distinct symbols currently stored in the database
+   */
+  async getDistinctSymbols(): Promise<string[]> {
+    if (!this.pool || !this.isConnected) return [];
+
+    try {
+      const result = await this.pool.query(
+        `SELECT DISTINCT symbol FROM fyers_candles`
+      );
+      
+      return result.rows.map(row => row.symbol);
+    } catch (err: any) {
+      this.logger.error(`Failed to fetch distinct symbols: ${err.message}`);
+      return [];
+    }
+  }
+
+  /**
    * Get the latest timestamp for Fyers candles for a specific symbol and resolution
    */
   async getLatestFyersCandleDate(symbol: string, resolution: string): Promise<Date | null> {

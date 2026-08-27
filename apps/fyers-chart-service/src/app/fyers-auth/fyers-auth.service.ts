@@ -61,7 +61,7 @@ export class FyersAuthService implements OnModuleInit {
 
       if (response.data && response.data.s === 'ok') {
         const newAccessToken = response.data.access_token;
-        await this.redisService.set('fyers_access_token', newAccessToken, 86400); // 24 hr expiry
+        await this.redisService.set('fyers_access_token', newAccessToken, 72000); // 20 hr expiry
         this.logger.log('Successfully generated and stored new daily Fyers access token!');
       } else {
         this.logger.error('Failed to generate daily access token:', response.data);
@@ -118,7 +118,7 @@ export class FyersAuthService implements OnModuleInit {
         const accessToken = response.data.access_token;
         const refreshToken = response.data.refresh_token;
 
-        await this.redisService.set('fyers_access_token', accessToken, 86400); // 24 hr expiry
+        await this.redisService.set('fyers_access_token', accessToken, 72000); // 20 hr expiry
         if (refreshToken) {
           await this.redisService.set('fyers_refresh_token', refreshToken);
         }

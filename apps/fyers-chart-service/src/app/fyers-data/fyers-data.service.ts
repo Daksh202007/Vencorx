@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { Cron } from '@nestjs/schedule';
 import { FyersAuthService } from '../fyers-auth/fyers-auth.service';
 import { TimescaleService, FyersCandle } from '../database/timescale.service';
 import axios from 'axios';
@@ -22,7 +23,7 @@ export class FyersDataService {
    * @param to Epoch timestamp in seconds or 'yyyy-mm-dd'
    */
   async fetchAndSaveHistory(symbol: string, resolution: string, from: string, to: string) {
-    const fetchKey = `${symbol}-${resolution}`;
+    const fetchKey = `${symbol}-${resolution}-${from}-${to}`;
 
     // Request Coalescing: If a fetch for this symbol/resolution is already running (or recently finished), just wait for it!
     if (this.activeFetches.has(fetchKey)) {
@@ -211,5 +212,43 @@ export class FyersDataService {
 
   private sleep(ms: number) {
     return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Daily Candle Rewrite Job
+   * Runs at 4:00 PM IST (Monday - Friday) after Indian markets close.
+   */
+  @Cron('0 16 * * 1-5', { timeZone: 'Asia/Kolkata' })
+  async rewriteDailyCandles() {
+    this.logger.log('Starting daily candle rewrite job at 4:00 PM IST...');
+    const symbols = await this.timescaleService.getDistinctSymbols();
+    
+    if (symbols.length === 0) {
+      this.logger.log('No symbols found in the database to rewrite.');
+      return;
+    }
+
+    const now = new Date();
+    // Get beginning of today (midnight)
+    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    
+    const fromStr = Math.floor(startOfDay.getTime() / 1000).toString();
+    const toStr = Math.floor(now.getTime() / 1000).toString();
+    
+    const resolutions = ['1', '15', '240'];
+
+    for (const symbol of symbols) {
+      for (const res of resolutions) {
+        try {
+           this.logger.log(`Rewriting ${symbol} (${res}m) for today...`);
+           await this.fetchAndSaveHistory(symbol, res, fromStr, toStr);
+           await this.sleep(2000); // 2 second delay to avoid rate limits
+        } catch (e: any) {
+           this.logger.error(`Failed to rewrite today's candles for ${symbol} (${res}m): ${e.message}`);
+        }
+      }
+      await this.sleep(3000); // Additional sleep between symbols
+    }
+    this.logger.log('Finished daily candle rewrite job.');
   }
 }
