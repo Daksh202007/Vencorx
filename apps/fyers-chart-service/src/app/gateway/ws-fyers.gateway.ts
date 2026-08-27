@@ -45,6 +45,24 @@ export class WsFyersGateway implements OnGatewayConnection, OnGatewayDisconnect,
   @WebSocketServer()
   server!: Server;
 
+  private sendTelegramCandleAlert(candle: any) {
+    const token = process.env.TELEGRAM_BOT_TOKEN;
+    const chatId = process.env.TELEGRAM_CHAT_ID;
+    if (!token || !chatId) return;
+
+
+    const timeStr = candle.timestamp.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+    const text = `📊 *Candle Closed [${candle.resolution}m]* 📊\n\n*Symbol:* ${candle.symbol}\n*Close:* \`${candle.close}\`\n*Volume:* \`${candle.volume}\`\n*Time:* ${timeStr}`;
+
+    axios.post(`https://api.telegram.org/bot${token}/sendMessage`, {
+      chat_id: chatId,
+      text,
+      parse_mode: 'Markdown',
+    }).catch(() => {
+      // Silently fail if Telegram is down
+    });
+  }
+
   private getCandleStartTime(date: Date, resolutionMinutes: number): Date {
     const d = new Date(date);
     if (resolutionMinutes === 1) {
@@ -301,6 +319,9 @@ export class WsFyersGateway implements OnGatewayConnection, OnGatewayDisconnect,
             if (active) {
               // Old candle closed! Final save to DB
               await this.timescaleService.saveCandles([active]);
+              
+              // Send Telegram alert (fire and forget)
+              this.sendTelegramCandleAlert(active);
             }
             // Start new candle
             active = {
