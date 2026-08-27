@@ -36,6 +36,7 @@ export class WsFyersGateway implements OnGatewayConnection, OnGatewayDisconnect,
   private isWsConnected = false;
   private isWsConnecting = false;
   private activeCandles = new Map<string, ActiveCandleState>();
+  private dailyVolumeMap = new Map<string, number>(); // Tracks the highest known vol_traded_today per symbol
   
   // Reconnection and Dead-Man Switch State
   private reconnectAttempts = 0;
@@ -308,7 +309,12 @@ export class WsFyersGateway implements OnGatewayConnection, OnGatewayDisconnect,
         const timestamp = message.timestamp ? new Date(message.timestamp * 1000) : new Date();
         const resolutions = [1, 15, 240];
         const ltp = message.ltp || 0;
-        const volTradedToday = message.vol_traded_today || 0;
+        
+        // Track the highest known daily volume across all ticks to prevent spikes
+        if (message.vol_traded_today && message.vol_traded_today > (this.dailyVolumeMap.get(message.symbol) || 0)) {
+          this.dailyVolumeMap.set(message.symbol, message.vol_traded_today);
+        }
+        const volTradedToday = this.dailyVolumeMap.get(message.symbol) || 0;
 
         for (const res of resolutions) {
           const resStr = res.toString();
