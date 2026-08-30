@@ -68,6 +68,9 @@ export class FyersAuthService implements OnModuleInit {
       }
     } catch (error: any) {
       this.logger.error(`Error in daily token generation cron: ${error.message}`);
+      if (error.response && error.response.data) {
+        this.logger.error(`Fyers API Error Response: ${JSON.stringify(error.response.data)}`);
+      }
     }
   }
 
@@ -131,6 +134,9 @@ export class FyersAuthService implements OnModuleInit {
       }
     } catch (error: any) {
       this.logger.error(`Error exchanging auth code: ${error.message}`);
+      if (error.response && error.response.data) {
+        this.logger.error(`Fyers API Error Response (Auth Code): ${JSON.stringify(error.response.data)}`);
+      }
       throw error;
     }
   }

@@ -1,6 +1,8 @@
-import { Controller, Get, Query, HttpException, HttpStatus, Res } from '@nestjs/common';
+import { Controller, Get, Query, HttpException, HttpStatus, Res, UseGuards } from '@nestjs/common';
 import { FyersDataService } from './fyers-data/fyers-data.service';
 import { FyersAuthService } from './fyers-auth/fyers-auth.service';
+import { JwtAuthGuard } from './auth/jwt-auth.guard';
+
 @Controller('fyers')
 export class AppController {
   constructor(
@@ -27,6 +29,7 @@ export class AppController {
   }
 
   @Get('history')
+  @UseGuards(JwtAuthGuard)
   async getHistory(
     @Query('symbol') symbol: string,
     @Query('resolution') resolution: string,
