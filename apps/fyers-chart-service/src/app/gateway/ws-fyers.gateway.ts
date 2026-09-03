@@ -43,6 +43,8 @@ export class WsFyersGateway implements OnGatewayConnection, OnGatewayDisconnect,
   private lastTickTime: number = 0;
   private deadManInterval: NodeJS.Timeout | null = null;
   private marketStatusInterval: NodeJS.Timeout | null = null;
+  // Polls Redis waiting for a token to appear after a failed cron
+  private noTokenRetryInterval: NodeJS.Timeout | null = null;
 
   @WebSocketServer()
   server!: Server;
@@ -174,6 +176,9 @@ export class WsFyersGateway implements OnGatewayConnection, OnGatewayDisconnect,
     if (this.marketStatusInterval) {
       clearInterval(this.marketStatusInterval);
     }
+    if (this.noTokenRetryInterval) {
+      clearInterval(this.noTokenRetryInterval);
+    }
   }
 
   async handleConnection(client: Socket) {
@@ -215,9 +220,30 @@ export class WsFyersGateway implements OnGatewayConnection, OnGatewayDisconnect,
     try {
       const token = await this.fyersAuthService.getAccessToken();
       if (!token) {
-        this.logger.error('Cannot connect Fyers WS: No access token available.');
+        this.logger.error('Cannot connect Fyers WS: No access token available. Will poll every 60s until a token appears...');
         this.isWsConnecting = false;
+
+        // Start polling for a token (e.g. manually added to Redis after a failed cron)
+        if (!this.noTokenRetryInterval) {
+          this.noTokenRetryInterval = setInterval(async () => {
+            const retryToken = await this.fyersAuthService.getAccessToken();
+            if (retryToken) {
+              this.logger.log('Token detected in Redis! Stopping poll and reconnecting Fyers WS...');
+              clearInterval(this.noTokenRetryInterval!);
+              this.noTokenRetryInterval = null;
+              await this.ensureFyersSocketConnected();
+            } else {
+              this.logger.warn('No Fyers token yet — still waiting for manual token or cron recovery...');
+            }
+          }, 60000); // Check every 60 seconds
+        }
         return;
+      }
+
+      // Token found — clear the no-token polling loop if it was running
+      if (this.noTokenRetryInterval) {
+        clearInterval(this.noTokenRetryInterval);
+        this.noTokenRetryInterval = null;
       }
 
       const appId = process.env.FYERS_APP_ID || '';
