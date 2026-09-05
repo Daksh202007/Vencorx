@@ -8,5 +8,6 @@ import { FyersDataModule } from '../fyers-data/fyers-data.module';
 @Module({
   imports: [FyersAuthModule, DatabaseModule, RedisModule, FyersDataModule],
   providers: [WsFyersGateway],
+  exports: [WsFyersGateway],
 })
 export class GatewayModule {}

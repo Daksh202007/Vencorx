@@ -2,12 +2,14 @@ import { Controller, Get, Query, HttpException, HttpStatus, Res, UseGuards } fro
 import { FyersDataService } from './fyers-data/fyers-data.service';
 import { FyersAuthService } from './fyers-auth/fyers-auth.service';
 import { JwtAuthGuard } from './auth/jwt-auth.guard';
+import { WsFyersGateway } from './gateway/ws-fyers.gateway';
 
 @Controller('fyers')
 export class AppController {
   constructor(
     private readonly fyersDataService: FyersDataService,
-    private readonly fyersAuthService: FyersAuthService
+    private readonly fyersAuthService: FyersAuthService,
+    private readonly wsFyersGateway: WsFyersGateway,
   ) {}
 
   @Get('callback')
@@ -22,7 +24,12 @@ export class AppController {
 
     try {
       await this.fyersAuthService.generateTokensFromAuthCode(authCode);
-      return res.send('<h2>Successfully authenticated with Fyers!</h2><p>Refresh token and Access token saved to Redis. You may close this window.</p>');
+
+      // Force the Fyers WebSocket to reconnect immediately with the new token
+      // instead of waiting for the 60s polling loop to pick it up.
+      this.wsFyersGateway.reconnectWithFreshToken().catch(() => {});
+
+      return res.send('<h2>Successfully authenticated with Fyers!</h2><p>Refresh token and Access token saved to Redis. WebSocket reconnecting now. You may close this window.</p>');
     } catch (error: any) {
       return res.status(HttpStatus.INTERNAL_SERVER_ERROR).send(`<h2>Error generating tokens</h2><p>${error.message}</p>`);
     }

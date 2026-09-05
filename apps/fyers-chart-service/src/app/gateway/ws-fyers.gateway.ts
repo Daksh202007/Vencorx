@@ -335,6 +335,21 @@ export class WsFyersGateway implements OnGatewayConnection, OnGatewayDisconnect,
         const timestamp = message.timestamp ? new Date(message.timestamp * 1000) : new Date();
         const resolutions = [1, 15, 240];
         const ltp = message.ltp || 0;
+
+        // --- Broadcast raw live tick to all clients subscribed to this symbol ---
+        // Emitted BEFORE candle aggregation so clients get the tick immediately.
+        this.server.to(message.symbol).emit('fyers_tick', {
+          symbol:          message.symbol,
+          ltp,
+          open:            message.open_price  ?? 0,
+          high:            message.high_price  ?? 0,
+          low:             message.low_price   ?? 0,
+          prev_close:      message.prev_close_price ?? 0,
+          bid:             message.bid_price   ?? 0,
+          ask:             message.ask_price   ?? 0,
+          vol_traded_today: message.vol_traded_today ?? 0,
+          timestamp:       timestamp.getTime(),
+        });
         
         // Track the highest known daily volume across all ticks to prevent spikes
         if (message.vol_traded_today && message.vol_traded_today > (this.dailyVolumeMap.get(message.symbol) || 0)) {
@@ -401,6 +416,17 @@ export class WsFyersGateway implements OnGatewayConnection, OnGatewayDisconnect,
     this.fyersSocket.on('error', (message: any) => {
       this.isWsConnecting = false; // Reset lock on error just in case
       this.logger.error(`Fyers WS Error: ${JSON.stringify(message)}`);
+
+      // If Fyers rejects with invalid token (-15/-16), the socket is unusable.
+      // Activate the auth service circuit-breaker so no code keeps retrying Redis
+      // with the same dead token, and clear the socket for a fresh reconnect.
+      const code = message?.code ?? message?.error_code;
+      if (code === -15 || code === -16) {
+        this.logger.warn('Auth error from Fyers WS — activating circuit-breaker and clearing socket.');
+        this.fyersAuthService.markTokenInvalid(); // circuit-breaker ON
+        this.isWsConnected = false;
+        this.fyersSocket = null;
+      }
     });
 
     this.fyersSocket.on('close', () => {
@@ -470,5 +496,30 @@ export class WsFyersGateway implements OnGatewayConnection, OnGatewayDisconnect,
     }
     
     return { event: 'unsubscribed', symbol };
+  }
+
+  /**
+   * Called after a fresh Fyers access token is stored in Redis (e.g. after manual login).
+   * Tears down any existing (broken/expired) WS connection and reconnects with the new token.
+   */
+  async reconnectWithFreshToken(): Promise<void> {
+    this.logger.log('reconnectWithFreshToken() called — forcing WS reconnect with new token...');
+
+    // Tear down existing broken socket cleanly
+    if (this.fyersSocket) {
+      try { this.fyersSocket.close(); } catch (_) {}
+      this.fyersSocket = null;
+    }
+    this.isWsConnected = false;
+    this.isWsConnecting = false;
+    this.reconnectAttempts = 0;
+
+    // Clear the no-token polling loop since we now have a token
+    if (this.noTokenRetryInterval) {
+      clearInterval(this.noTokenRetryInterval);
+      this.noTokenRetryInterval = null;
+    }
+
+    await this.ensureFyersSocketConnected();
   }
 }
