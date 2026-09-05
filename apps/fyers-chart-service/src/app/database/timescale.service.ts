@@ -243,6 +243,33 @@ export class TimescaleService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
+   * Get the EARLIEST timestamp for Fyers candles for a specific symbol and resolution.
+   * Used by the backfill system to determine how far back data already exists.
+   */
+  async getEarliestFyersCandleDate(symbol: string, resolution: string): Promise<Date | null> {
+    if (!this.pool || !this.isConnected) return null;
+
+    try {
+      const result = await this.pool.query(
+        `SELECT timestamp 
+         FROM fyers_candles 
+         WHERE symbol = $1 AND resolution = $2
+         ORDER BY timestamp ASC 
+         LIMIT 1`,
+        [symbol, resolution]
+      );
+      
+      if (result.rows.length > 0) {
+        return new Date(result.rows[0].timestamp);
+      }
+      return null;
+    } catch (err: any) {
+      this.logger.error(`Failed to fetch earliest fyers candle date for ${symbol} (${resolution}): ${err.message}`);
+      return null;
+    }
+  }
+
+  /**
    * Data Retention Policy: Run every Sunday at 3:00 AM
    * Deletes 1-minute ('1') candles older than 6 months to save disk space.
    * 15m and 4h candles are retained forever for long-term historical analysis.

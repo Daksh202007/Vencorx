@@ -157,57 +157,138 @@ export class FyersDataService {
   }
 
   /**
-   * Throttled background fetcher for 1 year of 1m, 15m, 4h data
-   * Fetches in 90-day chunks and sleeps between requests to avoid rate limits
+   * Resolution config: max history Fyers provides + safe chunk size per resolution.
+   *
+   * Fyers API limits (approximate):
+   *   1m  → max ~100 days history, fetch in 30-day chunks
+   *   15m → max ~400 days history, fetch in 90-day chunks
+   *   4H  → max ~2000 days (~5.5yr) history, fetch in 365-day chunks
    */
-  async fetchThrottledHistory(symbol: string) {
-    this.logger.log(`Starting background throttled fetch for ${symbol}...`);
-    
-    const now = new Date();
-    
-    const resolutions = ['1', '15', '240'];
-    const chunkDays = 90; // 90 days max per request
-    const chunkMs = chunkDays * 24 * 60 * 60 * 1000;
-    
-    for (const res of resolutions) {
-      let currentFrom: number;
-      const lastDate = await this.timescaleService.getLatestFyersCandleDate(symbol, res);
-      
-      if (lastDate) {
-        currentFrom = lastDate.getTime();
-        this.logger.log(`Found existing ${res}m data for ${symbol} up to ${lastDate.toISOString()}. Fetching missing days...`);
-      } else {
-        currentFrom = now.getTime() - 365 * 24 * 60 * 60 * 1000;
-        this.logger.log(`No existing ${res}m data for ${symbol}. Fetching full 1 year...`);
-      }
+  private readonly RESOLUTION_CONFIG: Record<string, { maxDays: number; chunkDays: number }> = {
+    '1':   { maxDays: 100,  chunkDays: 30  },
+    '15':  { maxDays: 400,  chunkDays: 90  },
+    '240': { maxDays: 2000, chunkDays: 365 },
+  };
 
-      const endTime = now.getTime();
-      
-      while (currentFrom < endTime) {
-        let currentTo = currentFrom + chunkMs;
-        if (currentTo > endTime) currentTo = endTime;
-        
-        const fromStr = Math.floor(currentFrom / 1000).toString();
-        const toStr = Math.floor(currentTo / 1000).toString();
-        
-        try {
-          this.logger.log(`[Throttled Fetch] ${symbol} Res: ${res}, From: ${new Date(currentFrom).toLocaleDateString()}, To: ${new Date(currentTo).toLocaleDateString()}`);
-          await this.fetchAndSaveHistory(symbol, res, fromStr, toStr);
-        } catch (e: any) {
-          this.logger.error(`Throttled fetch error for ${symbol} res ${res}: ${e.message}`);
-        }
-        
-        // Sleep 3 seconds between chunks to protect server and API limits
-        await this.sleep(3000);
-        
-        currentFrom = currentTo;
+  /**
+   * Full historical backfill for a single symbol across all resolutions.
+   *
+   * Strategy:
+   *  1. Check the EARLIEST candle already stored in DB for this symbol+resolution.
+   *  2. If no data → fetch from `now - maxDays` up to `now`.
+   *  3. If some data exists → fetch from `now - maxDays` up to `earliestKnown` (fill backwards gap)
+   *     AND from `latestKnown` up to `now` (fill forward gap / today's live data).
+   *  4. Chunked requests with throttle sleep to stay within Fyers rate limits.
+   */
+  async fetchThrottledHistory(symbol: string): Promise<void> {
+    const sym = symbol.includes(':') ? symbol : `NSE:${symbol}`;
+    this.logger.log(`[Backfill] Starting full history backfill for ${sym}...`);
+
+    const now = Date.now();
+
+    for (const [res, cfg] of Object.entries(this.RESOLUTION_CONFIG)) {
+      try {
+        await this.backfillResolution(sym, res, cfg.maxDays, cfg.chunkDays, now);
+      } catch (e: any) {
+        this.logger.error(`[Backfill] Resolution ${res} failed for ${sym}: ${e.message}`);
       }
-      
-      // Extra sleep between resolutions
+      // Extra sleep between resolutions so we don't hammer the API
       await this.sleep(5000);
     }
-    
-    this.logger.log(`Finished background throttled fetch for ${symbol}`);
+
+    this.logger.log(`[Backfill] Completed full history backfill for ${sym}.`);
+  }
+
+  /**
+   * Backfill one resolution for a symbol.
+   * Fetches the maximum possible history in chunks, filling both backward and forward gaps.
+   */
+  private async backfillResolution(
+    symbol: string,
+    resolution: string,
+    maxDays: number,
+    chunkDays: number,
+    nowMs: number,
+  ): Promise<void> {
+    const chunkMs   = chunkDays * 24 * 60 * 60 * 1000;
+    const maxFromMs = nowMs - maxDays * 24 * 60 * 60 * 1000;
+
+    // Query DB for earliest and latest known candle
+    const [earliest, latest] = await Promise.all([
+      this.timescaleService.getEarliestFyersCandleDate(symbol, resolution),
+      this.timescaleService.getLatestFyersCandleDate(symbol, resolution),
+    ]);
+
+    if (!earliest || !latest) {
+      // No data at all — fetch from maxDays ago to now
+      this.logger.log(`[Backfill] ${symbol} (${resolution}m): No existing data. Fetching max ${maxDays} days...`);
+      await this.fetchChunked(symbol, resolution, maxFromMs, nowMs, chunkMs);
+      return;
+    }
+
+    const earliestMs = earliest.getTime();
+    const latestMs   = latest.getTime();
+
+    // Backward gap: from maxDays-ago up to earliest known candle
+    if (earliestMs > maxFromMs + chunkMs) {
+      this.logger.log(`[Backfill] ${symbol} (${resolution}m): Filling backward gap from ${new Date(maxFromMs).toDateString()} to ${earliest.toDateString()}`);
+      await this.fetchChunked(symbol, resolution, maxFromMs, earliestMs, chunkMs);
+    } else {
+      this.logger.log(`[Backfill] ${symbol} (${resolution}m): Backward history already at max (${new Date(earliestMs).toDateString()}). Skipping backward fill.`);
+    }
+
+    // Forward gap: from latest known candle up to now
+    const oneChunkAgo = nowMs - chunkMs;
+    if (latestMs < oneChunkAgo) {
+      this.logger.log(`[Backfill] ${symbol} (${resolution}m): Filling forward gap from ${latest.toDateString()} to now...`);
+      await this.fetchChunked(symbol, resolution, latestMs, nowMs, chunkMs);
+    } else {
+      this.logger.log(`[Backfill] ${symbol} (${resolution}m): Data is recent enough (${new Date(latestMs).toDateString()}). Skipping forward fill.`);
+    }
+  }
+
+  /**
+   * Fetch a date range in `chunkMs`-sized pieces with throttle sleep between requests.
+   */
+  private async fetchChunked(
+    symbol: string,
+    resolution: string,
+    fromMs: number,
+    toMs: number,
+    chunkMs: number,
+  ): Promise<void> {
+    let cursor = fromMs;
+    while (cursor < toMs) {
+      const end = Math.min(cursor + chunkMs, toMs);
+      const fromStr = Math.floor(cursor / 1000).toString();
+      const toStr   = Math.floor(end   / 1000).toString();
+
+      this.logger.log(
+        `[Backfill] Fetching ${symbol} (${resolution}m): ${new Date(cursor).toDateString()} → ${new Date(end).toDateString()}`,
+      );
+
+      try {
+        await this.fetchAndSaveHistory(symbol, resolution, fromStr, toStr);
+      } catch (e: any) {
+        this.logger.error(`[Backfill] Chunk failed ${symbol} (${resolution}m) ${fromStr}→${toStr}: ${e.message}`);
+        // Continue to next chunk even if one fails
+      }
+
+      // Throttle: 3s between chunks to avoid rate-limit bans
+      await this.sleep(3000);
+      cursor = end;
+    }
+  }
+
+  /**
+   * Public entry point: trigger a full backfill for a new stock in the background.
+   * Call this when a stock is subscribed for the first time.
+   * Non-blocking — fires and forgets, errors are logged not thrown.
+   */
+  triggerFullBackfill(symbol: string): void {
+    this.fetchThrottledHistory(symbol).catch(e =>
+      this.logger.error(`[Backfill] Unhandled error for ${symbol}: ${e.message}`),
+    );
   }
 
   private sleep(ms: number) {
