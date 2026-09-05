@@ -3,6 +3,7 @@ import { ScheduleModule } from '@nestjs/schedule';
 
 import { AppController } from './app.controller';
 import { FyersInternalController } from './fyers-internal.controller';
+import { VersionController } from './version.controller';
 import { AppService } from './app.service';
 import { TelegramLoggerService } from './telegram-logger.service';
 import { DatabaseModule } from './database/database.module';
@@ -20,7 +21,7 @@ import { GatewayModule } from './gateway/gateway.module';
     FyersDataModule,
     GatewayModule,
   ],
-  controllers: [AppController, FyersInternalController],
+  controllers: [AppController, FyersInternalController, VersionController],
   providers: [AppService, TelegramLoggerService],
 })
 export class AppModule {}

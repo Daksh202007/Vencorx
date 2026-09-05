@@ -56,6 +56,11 @@ services:
     build:
       context: ../
       dockerfile: Dockerfile
+      args:
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
+        GIT_BRANCH: ${GIT_BRANCH:-unknown}
+        GIT_TAG: ${GIT_TAG:-unknown}
+        BUILD_TIME: ${BUILD_TIME:-unknown}
     container_name: auth_service
     command: npx nx start auth-service
     env_file:
@@ -74,6 +79,11 @@ services:
     build:
       context: ../
       dockerfile: Dockerfile
+      args:
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
+        GIT_BRANCH: ${GIT_BRANCH:-unknown}
+        GIT_TAG: ${GIT_TAG:-unknown}
+        BUILD_TIME: ${BUILD_TIME:-unknown}
     container_name: chat_service
     command: node apps/chat-service/dist/main.js
     env_file:
@@ -99,6 +109,11 @@ services:
     build:
       context: ../
       dockerfile: Dockerfile
+      args:
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
+        GIT_BRANCH: ${GIT_BRANCH:-unknown}
+        GIT_TAG: ${GIT_TAG:-unknown}
+        BUILD_TIME: ${BUILD_TIME:-unknown}
     container_name: fyers_chart_service
     command: node apps/fyers-chart-service/dist/main.js
     env_file:

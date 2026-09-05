@@ -44,6 +44,13 @@ jobs:
             
             # Write the ENV_FILE secret securely to the .env file
             echo "$ENV_FILE" > .env
+
+            # Export git metadata so docker-compose can pass them as build args
+            export GIT_COMMIT=$(git -C /root/ai-tradesignal rev-parse HEAD 2>/dev/null || echo 'unknown')
+            export GIT_BRANCH=$(git -C /root/ai-tradesignal rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'unknown')
+            export GIT_TAG=$(git -C /root/ai-tradesignal describe --tags --always --dirty 2>/dev/null || echo 'no-tag')
+            export BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+            echo "Building commit: $GIT_COMMIT  branch: $GIT_BRANCH  tag: $GIT_TAG"
             
             # Rebuild and restart the Docker stack
             docker compose down
