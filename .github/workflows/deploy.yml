@@ -1,4 +1,4 @@
-name: Deploy to VPS
+﻿name: Deploy to VPS
 
 on:
   push:
@@ -14,6 +14,16 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      # Capture git metadata HERE in the Actions runner (where .git IS available).
+      # .git is excluded from SCP, so we must read it before copying files to VPS.
+      - name: Capture Git Metadata
+        id: git_meta
+        run: |
+          echo "commit=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+          echo "branch=$(git rev-parse --abbrev-ref HEAD)" >> $GITHUB_OUTPUT
+          echo "tag=$(git describe --tags --always --dirty 2>/dev/null || echo no-tag)" >> $GITHUB_OUTPUT
+          echo "build_time=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_OUTPUT
+
       - name: Copy Files to VPS via SCP
         uses: appleboy/scp-action@v0.1.7
         with:
@@ -22,7 +32,7 @@ jobs:
           key: ${{ secrets.VPS_SSH_KEY }}
           source: "."
           target: "/root/ai-tradesignal"
-          # Exclude heavy folders to speed up transfer; they will be built/installed inside Docker on the VPS
+          # Exclude heavy folders to speed up transfer
           exclude: |
             **/node_modules/**
             **/.next/**
@@ -33,25 +43,18 @@ jobs:
         uses: appleboy/ssh-action@v1.0.3
         env:
           ENV_FILE: ${{ secrets.ENV_FILE }}
+          GIT_COMMIT: ${{ steps.git_meta.outputs.commit }}
+          GIT_BRANCH: ${{ steps.git_meta.outputs.branch }}
+          GIT_TAG: ${{ steps.git_meta.outputs.tag }}
+          BUILD_TIME: ${{ steps.git_meta.outputs.build_time }}
         with:
           host: 200.234.41.91
           username: root
           key: ${{ secrets.VPS_SSH_KEY }}
-          envs: ENV_FILE
+          envs: ENV_FILE,GIT_COMMIT,GIT_BRANCH,GIT_TAG,BUILD_TIME
           script: |
-            # Navigate to the deployment directory
+            printf '%s' "$ENV_FILE" > /root/ai-tradesignal/.env
             cd /root/ai-tradesignal/deployment
-            
-            # Write the ENV_FILE secret securely to the .env file
-            echo "$ENV_FILE" > .env
-
-            # Export git metadata so docker-compose can pass them as build args
-            export GIT_COMMIT=$(git -C /root/ai-tradesignal rev-parse HEAD 2>/dev/null || echo 'unknown')
-            export GIT_BRANCH=$(git -C /root/ai-tradesignal rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'unknown')
-            export GIT_TAG=$(git -C /root/ai-tradesignal describe --tags --always --dirty 2>/dev/null || echo 'no-tag')
-            export BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-            echo "Building commit: $GIT_COMMIT  branch: $GIT_BRANCH  tag: $GIT_TAG"
-            
-            # Rebuild and restart the Docker stack
+            echo "Building commit: $GIT_COMMIT  branch: $GIT_BRANCH  tag: $GIT_TAG  time: $BUILD_TIME"
             docker compose down
             docker compose up --build -d
