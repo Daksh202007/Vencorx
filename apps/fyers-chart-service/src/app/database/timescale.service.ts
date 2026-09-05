@@ -111,7 +111,20 @@ export class TimescaleService implements OnModuleInit, OnModuleDestroy {
       } catch (e: any) {
         // Ignored, might be standard PG
       }
-      
+
+      // Create symbol_master table for stock search
+      await this.pool.query(`
+        CREATE TABLE IF NOT EXISTS symbol_master (
+          fytoken VARCHAR(50) PRIMARY KEY,
+          symbol VARCHAR(100) NOT NULL,
+          name VARCHAR(255) NOT NULL,
+          exchange VARCHAR(20) NOT NULL
+        );
+      `);
+      // Add indexes for faster case-insensitive searching
+      await this.pool.query(`CREATE INDEX IF NOT EXISTS idx_symbol_master_symbol ON symbol_master (LOWER(symbol));`);
+      await this.pool.query(`CREATE INDEX IF NOT EXISTS idx_symbol_master_name ON symbol_master (LOWER(name));`);
+
       this.logger.log('Database tables successfully initialized.');
     } catch (err: any) {
       this.logger.error(`Failed to initialize database tables: ${err.message}`);
@@ -266,6 +279,74 @@ export class TimescaleService implements OnModuleInit, OnModuleDestroy {
     } catch (err: any) {
       this.logger.error(`Failed to fetch earliest fyers candle date for ${symbol} (${resolution}): ${err.message}`);
       return null;
+    }
+  }
+
+  /**
+   * Bulk upsert stocks into symbol_master table
+   */
+  async upsertSymbols(symbols: Array<{ fytoken: string, symbol: string, name: string, exchange: string }>): Promise<void> {
+    if (!this.pool || !this.isConnected || symbols.length === 0) return;
+
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      for (const sym of symbols) {
+        await client.query(
+          `INSERT INTO symbol_master (fytoken, symbol, name, exchange)
+           VALUES ($1, $2, $3, $4)
+           ON CONFLICT (fytoken) DO UPDATE SET
+             symbol = EXCLUDED.symbol,
+             name = EXCLUDED.name,
+             exchange = EXCLUDED.exchange`,
+          [sym.fytoken, sym.symbol, sym.name, sym.exchange]
+        );
+      }
+      await client.query('COMMIT');
+    } catch (err: any) {
+      await client.query('ROLLBACK');
+      this.logger.error(`Failed to bulk upsert symbols: ${err.message}`);
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Fast prefix/contains search for symbols prioritizing exact starts-with matches.
+   */
+  async searchSymbols(query: string, exchange?: string): Promise<Array<{ symbol: string, name: string, fytoken: string, exchange: string }>> {
+    if (!this.pool || !this.isConnected || !query) return [];
+
+    try {
+      let sql = `
+        SELECT symbol, name, fytoken, exchange
+        FROM symbol_master
+        WHERE symbol ILIKE $1 OR name ILIKE $1
+      `;
+      const params: any[] = [`%${query}%`];
+
+      if (exchange) {
+        params.push(exchange);
+        sql += ` AND exchange = $2`;
+      }
+
+      sql += `
+        ORDER BY
+          CASE 
+            WHEN symbol ILIKE $${params.length + 1} THEN 1
+            WHEN name ILIKE $${params.length + 1} THEN 2
+            ELSE 3
+          END
+        LIMIT 15;
+      `;
+      params.push(`${query}%`);
+
+      const result = await this.pool.query(sql, params);
+      return result.rows;
+    } catch (err: any) {
+      this.logger.error(`Search query failed: ${err.message}`);
+      return [];
     }
   }
 
